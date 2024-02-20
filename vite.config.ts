@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite';
-import topLevelAwait from 'vite-plugin-top-level-await';
 import tsconfigPaths from 'vite-tsconfig-paths';
 import Path from 'path';
 
@@ -30,7 +29,6 @@ export default defineConfig(({ command }) => {
                 undefined,
         },
         plugins: [
-            topLevelAwait(),
             tsconfigPaths(),
         ],
     };

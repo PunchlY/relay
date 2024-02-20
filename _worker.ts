@@ -46,6 +46,8 @@ export default {
 
             return res;
         } catch (err) {
+            if (err instanceof Error)
+                err = err.stack || err.message;
             return new Response(JSON.stringify({
                 code: -1,
                 msg: err

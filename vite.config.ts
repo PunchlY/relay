@@ -11,7 +11,7 @@ export default defineConfig(({ command }) => {
             hmr: true,
         },
         appType: 'custom',
-        publicDir: 'public',
+        publicDir: false,
         build: {
             outDir: Path.resolve('dist'),
             target: [],

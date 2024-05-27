@@ -2,14 +2,13 @@ import { Hono } from 'hono';
 
 const app = new Hono();
 
-app.get('/age.tv/:vip{(m3u8|vip)}/:play', async (c) => {
-    const { vip, play } = c.req.param();
-    const url = new URL(`https://43.240.156.118:8443/${vip}`);
+app.get('/age.tv/m3u8/:play', async (c) => {
+    const { play } = c.req.param();
+    const url = new URL(`https://43.240.156.118:8443/m3u8`);
     url.searchParams.set('url', play);
     const res = await fetch(url);
     const text = await res.text();
-    console.log(text.match(/var Vurl = '(.+)'/));
-    const playUrl = text.match(/var Vurl = '(.+)'/)![1];
+    const playUrl = text.match(/var Vurl = ('|")(.+?)\1/)![2];
     if (import.meta.env.DEV)
         return c.text('play ' + playUrl);
     return c.redirect(playUrl);
@@ -40,7 +39,7 @@ app.get('/:protocol{http(s?):}//:host{.+\\.sinaimg\\.cn}/*', async (c) => {
 });
 
 app.get('/:protocol{http(s?):}//:host/*', (c) => {
-    const url = c.req.path.substring(1);
+    const url = c.req.url.substring(c.req.url.indexOf('/', 8) + 1);
     if (import.meta.env.DEV)
         return c.text('back ' + url);
     return c.redirect(url);

@@ -1,35 +1,14 @@
-import { defineConfig } from 'vite';
-import tsconfigPaths from 'vite-tsconfig-paths';
-import Path from 'path';
+import build from '@hono/vite-cloudflare-pages'
+import devServer from '@hono/vite-dev-server'
+import adapter from '@hono/vite-dev-server/cloudflare'
+import { defineConfig } from 'vite'
 
-export default defineConfig(({ command }) => {
-    return {
-        server: {
-            host: '127.0.0.1',
-            port: 3000,
-            hmr: true,
-        },
-        appType: 'custom',
-        publicDir: false,
-        build: {
-            outDir: Path.resolve('dist'),
-            target: [],
-            ssr: true,
-            rollupOptions: {
-                input: Path.resolve('_worker.ts'),
-            },
-            minify: command === 'build',
-            manifest: false,
-            ssrManifest: false,
-            copyPublicDir: false,
-        },
-        esbuild: {
-            drop: command === 'build' ?
-                ['console', 'debugger'] :
-                undefined,
-        },
-        plugins: [
-            tsconfigPaths(),
-        ],
-    };
-});
+export default defineConfig({
+  plugins: [
+    build(),
+    devServer({
+      adapter,
+      entry: 'src/index.ts'
+    })
+  ]
+})

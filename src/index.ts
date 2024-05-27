@@ -2,6 +2,19 @@ import { Hono } from 'hono';
 
 const app = new Hono();
 
+app.get('/age.tv/:vip{(m3u8|vip)}/:play', async (c) => {
+    const { vip, play } = c.req.param();
+    const url = new URL(`https://43.240.156.118:8443/${vip}`);
+    url.searchParams.set('url', play);
+    const res = await fetch(url);
+    const text = await res.text();
+    console.log(text.match(/var Vurl = '(.+)'/));
+    const playUrl = text.match(/var Vurl = '(.+)'/)![1];
+    if (import.meta.env.DEV)
+        return c.text('play ' + playUrl);
+    return c.redirect(playUrl);
+});
+
 app.get('/:protocol{http(s?):}//img.hellogithub.com/*', async (c) => {
     const url = c.req.path.substring(1);
     const res = await fetch(url, {

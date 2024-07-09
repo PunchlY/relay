@@ -43,7 +43,11 @@ app.get(':host/*', (c) => {
 async function $fetch(c: Context, input: RequestInfo, init?: RequestInit<RequestInitCfProperties>) {
     const { body, status, headers } = await fetch(input, {
         ...init,
-        headers: { ...c.req.header(), ...init?.headers }
+        headers: {
+            ...c.req.header(),
+            Referer: undefined!,
+            ...init?.headers
+        }
     });
     const newHeaders = Object.fromEntries(headers.entries());
     return c.newResponse(body as ReadableStream, status as StatusCode, newHeaders);

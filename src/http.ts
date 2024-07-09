@@ -27,11 +27,15 @@ app.get(':host{.+\\.sinaimg\\.cn}/*', async (c) => {
 });
 
 app.get('img-blog.csdnimg.cn/*', async (c) => {
-    return $fetch(c, c.var.url);
+    return $fetch(c, c.var.url, {
+        headers: { Referer: 'https://blog.csdn.net/' },
+    });
 });
 
 app.get('developer.qcloudimg.com/*', async (c) => {
-    return $fetch(c, c.var.url);
+    return $fetch(c, c.var.url, {
+        headers: { Referer: 'https://cloud.tencent.com/' },
+    });
 });
 
 app.get(':host/*', (c) => {
@@ -45,7 +49,6 @@ async function $fetch(c: Context, input: RequestInfo, init?: RequestInit<Request
         ...init,
         headers: {
             ...c.req.header(),
-            Referer: undefined!,
             ...init?.headers
         }
     });

@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { StatusCode } from 'hono/utils/http-status';
 
-
 const app = new Hono<{
     Variables: {
         url: string;
@@ -13,7 +12,7 @@ app.use(async (c, next) => {
     switch (c.req.method) {
         case 'GET':
         case 'HEAD': break;
-        default: return;
+        default: return c.status(405);
     }
     c.set('url', c.req.url.substring(c.req.url.indexOf('/', 8) + 1));
     await next();

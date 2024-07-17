@@ -8,7 +8,7 @@ const app = new Hono<{
     };
 }>().basePath(':protocol{http(s?):}//');
 
-app.get(async (c, next) => {
+app.get('*', async (c, next) => {
     c.set('url', c.req.url.substring(c.req.url.indexOf('/', 8) + 1));
     await next();
 });
@@ -21,7 +21,7 @@ app.get(':host{.+\\.sinaimg\\.cn}/*', $fetch({
     headers: { Referer: 'https://weibo.com/' },
 }));
 
-app.get($fetch());
+app.get('*', $fetch());
 
 function $fetch(init?: RequestInit<RequestInitCfProperties>) {
     return createMiddleware<{

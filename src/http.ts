@@ -14,11 +14,11 @@ app.get('*', async (c, next) => {
 });
 
 app.get('img.hellogithub.com/*', $fetch({
-    referrer: 'https://hellogithub.com/',
+    headers: { Referrer: 'https://hellogithub.com/' },
 }));
 
 app.get(':host{.+\\.sinaimg\\.cn}/*', $fetch({
-    referrer: 'https://weibo.com/',
+    headers: { Referrer: 'https://weibo.com/' },
 }));
 
 app.get('*', $fetch());

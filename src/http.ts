@@ -29,18 +29,20 @@ function $fetch(init?: RequestInit<RequestInitCfProperties>) {
             url: string;
         };
     }>(async (c) => {
-        const _headers = new Headers(init?.headers);
+        const headers = new Headers(init?.headers);
 
         const range = c.req.header('Range');
-        range && _headers.set('Range', range);
+        range && headers.set('Range', range);
 
-        const { body, status, headers } = await fetch(c.var.url, {
+        headers.has('Referer') || headers.set('Referer', c.var.url);
+
+        const res = await fetch(c.var.url, {
             ...init,
-            headers: _headers,
+            headers: headers,
             method: c.req.method,
         });
-        const newHeaders = Object.fromEntries(headers.entries());
-        return c.newResponse(body as ReadableStream, status as StatusCode, newHeaders);
+        
+        return c.newResponse(res.body as ReadableStream, res.status as StatusCode, Object.fromEntries(res.headers.entries()));
     });
 }
 

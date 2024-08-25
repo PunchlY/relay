@@ -21,6 +21,10 @@ app.get(':host{.+\\.sinaimg\\.cn}/*', $fetch({
     headers: { Referer: 'https://weibo.com/' },
 }));
 
+app.get(':host{.+\\.csdnimg\\.cn}/*', $fetch({
+    headers: { Referer: 'https://csdn.net/' },
+}));
+
 app.get('*', $fetch());
 
 function $fetch(init?: RequestInit<RequestInitCfProperties>) {

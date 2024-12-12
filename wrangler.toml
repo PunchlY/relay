@@ -1,5 +1,5 @@
 name = "relay"
-pages_build_output_dir = "./dist"
+main = "./src/index.ts"
 
 # [vars]
 # MY_VAR = "my-variable"

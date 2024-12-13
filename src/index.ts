@@ -34,7 +34,7 @@ const app = new Router()
     });
 
 interface Env {
-    ASSETS: Fetcher;
+    // ASSETS: Fetcher;
 }
 
 const appFetch = app.compose();

@@ -76,6 +76,7 @@ class Node extends Map<number, Node> {
     }
 }
 class ParamNode extends Node {
+    suffix = false;
     putParam(): never {
         throw new Error('is ParamNode');
     }
@@ -87,7 +88,8 @@ class ParamNode extends Node {
         for (let i = 0; i < queue.length; i++) {
             const temp = queue[i];
             for (const [charCode, node] of temp) {
-                node.fail = temp === this && temp.fail?.get(charCode) || this;
+                this.suffix ||= charCode !== SLASH;
+                node.fail = temp !== this && temp.fail?.get(charCode) || this;
                 node.param?.build();
                 node.wildcard?.build();
                 if (charCode === SLASH || node.param || node.wildcard)
@@ -215,9 +217,15 @@ function* find<T>(root: Node, list: T[], path: string, start: number, length: nu
         if (next)
             yield* find(next, list, path, start + 1, length);
     }
-    if (root.param) PARAM: {
-        let offset = start, node: Node = root.param;
-        for (let charCode; offset < length; offset++) {
+    if (root.param) {
+        if (root.param.suffix) for (let offset = start, node: Node = root.param, charCode; ; offset++) {
+            if (offset >= length) {
+                while (!node.index && node !== root.param)
+                    node = node.fail!;
+                if (node.index && start < length - node.deep)
+                    yield* find(node, list, path, length, length);
+                break;
+            }
             charCode = path.charCodeAt(offset);
             let cnode = node.get(charCode);
             while (!cnode && node !== root.param) {
@@ -228,13 +236,23 @@ function* find<T>(root: Node, list: T[], path: string, start: number, length: nu
                 node = cnode;
             if (charCode === SLASH || node.param || node.wildcard) {
                 if (node === root.param || start > offset - node.deep)
-                    break PARAM;
+                    break;
                 yield* find(node, list, path, offset + 1, length);
-                break PARAM;
+                break;
             }
+        } else for (let offset = start; ; offset++) {
+            if (offset >= length) {
+                if (root.param.index && start < length)
+                    yield* find(root.param, list, path, length, length);
+                break;
+            }
+            if (path.charCodeAt(offset) !== SLASH)
+                continue;
+            const next = root.param.get(SLASH);
+            if (next && start < offset)
+                yield* find(next, list, path, offset + 1, length);
+            break;
         }
-        if (node.index && start < offset - node.deep)
-            yield* find(node, list, path, offset + 1, length);
     }
     if (root.wildcard?.index)
         yield* find(root.wildcard, list, path, length, length);

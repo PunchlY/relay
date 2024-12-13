@@ -41,21 +41,6 @@ class Node extends Map<number, Node> {
     putWildcard() {
         return this.wildcard ??= new WildcardNode();
     }
-    assign(obj: object) {
-        for (const [key, value] of Object.entries(obj)) {
-            if (key.length === 1)
-                this.set(key.charCodeAt(0), new Node(this.deep + 1).assign(value));
-            else switch (key) {
-                case 'param':
-                    this.param = new ParamNode().assign(value);
-                    break;
-                case 'wildcard':
-                    this.wildcard = new WildcardNode().assign(value);
-                    break;
-            }
-        }
-        return this;
-    }
     build() {
         if (this.size === 1) {
             const charCodeList: number[] = [];
@@ -77,6 +62,7 @@ class Node extends Map<number, Node> {
 }
 class ParamNode extends Node {
     suffix = false;
+    fail = this;
     putParam(): never {
         throw new Error('is ParamNode');
     }
@@ -101,6 +87,9 @@ class ParamNode extends Node {
     }
 }
 class WildcardNode extends Node {
+    put(charCode: number): never {
+        throw new Error('is WildcardNode');
+    }
     putParam(): never {
         throw new Error('is WildcardNode');
     }
@@ -180,7 +169,29 @@ function clean<T>(node: Node, list: T[], newList: T[]): boolean {
     return hasEndpoint;
 }
 
-function mount<T extends Node>(root: T, node: Node, index = 0, paramNames?: string[]) {
+function* forEach<T>(node: Node, list: T[], charCodeLists: number[][] = [[SLASH]]): Generator<[Path, T]> {
+    if (node.index) {
+        const path = String.raw({
+            raw: [...charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList))],
+        }, ...(node.paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as Path;
+        yield [path, list[node.index - 1]];
+    }
+    for (const [charCode, child] of node) {
+        const [...charCodeListsCopy] = charCodeLists;
+        const [...charCodeListCopy] = charCodeListsCopy.pop()!;
+        if (charCode === ESCAPE || (isParamNameChar(charCode) && charCodeListCopy.at(-1) === PARAM))
+            charCodeListCopy.push(ESCAPE);
+        charCodeListCopy.push(charCode);
+        charCodeListsCopy.push(charCodeListCopy);
+        yield* forEach(child, list, charCodeListsCopy);
+    }
+    if (node.param)
+        yield* forEach(node.param, list, [...charCodeLists, []]);
+    if (node.wildcard)
+        yield* forEach(node.wildcard, list, [...charCodeLists, []]);
+}
+
+function mount<T extends Node>(root: T, node: T, index = 0, paramNames?: string[]) {
     if (root.wildcard?.index)
         return root;
     if (node.index && !root.index) {
@@ -197,10 +208,15 @@ function mount<T extends Node>(root: T, node: Node, index = 0, paramNames?: stri
     return root;
 }
 
-function* find<T>(root: Node, list: T[], path: string, start: number, length: number): Generator<T> {
+function* find<T>(root: Node, list: T[], path: string, start: number, length: number, paramFragment: [number, number][] = [], index = 0): Generator<{ store: T, param: Record<string, string>; }> {
     if (start >= length) {
-        if (root.index)
-            yield list[root.index - 1];
+        if (root.index) {
+            const store = list[root.index - 1];
+            const param: Record<string, string> = {};
+            if (root.paramNames) for (const [index, name] of root.paramNames.entries())
+                param[name] = path.slice(...paramFragment[index]);
+            yield { store, param };
+        }
         return;
     }
     if (root.part) PART: {
@@ -211,19 +227,21 @@ function* find<T>(root: Node, list: T[], path: string, start: number, length: nu
                 continue;
             break PART;
         }
-        yield* find(next, list, path, offset, length);
+        yield* find(next, list, path, offset, length, paramFragment, index);
     } else {
         const next = root.get(path.charCodeAt(start));
         if (next)
-            yield* find(next, list, path, start + 1, length);
+            yield* find(next, list, path, start + 1, length, paramFragment, index);
     }
     if (root.param) {
         if (root.param.suffix) for (let offset = start, node: Node = root.param, charCode; ; offset++) {
             if (offset >= length) {
                 while (!node.index && node !== root.param)
                     node = node.fail!;
-                if (node.index && start < length - node.deep)
-                    yield* find(node, list, path, length, length);
+                if (node.index && start < length - node.deep) {
+                    paramFragment[index] = [start, length - node.deep];
+                    yield* find(node, list, path, length, length, paramFragment, index + 1);
+                }
                 break;
             }
             charCode = path.charCodeAt(offset);
@@ -237,71 +255,96 @@ function* find<T>(root: Node, list: T[], path: string, start: number, length: nu
             if (charCode === SLASH || node.param || node.wildcard) {
                 if (node === root.param || start > offset - node.deep)
                     break;
-                yield* find(node, list, path, offset + 1, length);
+                paramFragment[index] = [start, offset - node.deep + 1];
+                yield* find(node, list, path, offset + 1, length, paramFragment, index + 1);
                 break;
             }
         } else for (let offset = start; ; offset++) {
             if (offset >= length) {
-                if (root.param.index && start < length)
-                    yield* find(root.param, list, path, length, length);
+                if (root.param.index && start < length) {
+                    paramFragment[index] = [start, length];
+                    yield* find(root.param, list, path, length, length, paramFragment, index + 1);
+                }
                 break;
             }
             if (path.charCodeAt(offset) !== SLASH)
                 continue;
             const next = root.param.get(SLASH);
-            if (next && start < offset)
-                yield* find(next, list, path, offset + 1, length);
+            if (next && start < offset) {
+                paramFragment[index] = [start, offset];
+                yield* find(next, list, path, offset + 1, length, paramFragment, index + 1);
+            }
             break;
         }
     }
-    if (root.wildcard?.index)
-        yield* find(root.wildcard, list, path, length, length);
+    if (root.wildcard?.index) {
+        paramFragment[index] = [start, length];
+        yield* find(root.wildcard, list, path, length, length, paramFragment, index + 1);
+    }
 }
 
-class Tree<T> {
+interface Context {
+    request: Request;
+    path: string;
+    pathIndex: number;
+    queryIndex: number;
+    param: Record<string, string>;
+}
+type Handler = (context: Context) => Response | PromiseLike<Response>;
+
+class Router {
     #node = new Node();
-    #list: T[] = [];
-    constructor(iterable?: Iterable<readonly [string, T]>) {
+    #list: Handler[] = [];
+    constructor(iterable?: Iterable<readonly [string, Handler]>) {
         if (!iterable)
             return;
         for (const args of iterable)
-            Reflect.apply(Tree.prototype.push, this, args);
+            Reflect.apply(Router.prototype.push, this, args);
     }
-    push(path: string, data: T) {
+    push(path: string, data: Handler) {
         const endpoint = put(this.#node, path);
         if (!endpoint || endpoint.index)
-            return false;
+            return this;
         endpoint.index = this.#list.push(data);
-        return true;
+        return this;
     }
-    mount(path: string, tree: Tree<T>) {
+    mount(path: string, tree: Router) {
         if (path.charCodeAt(path.length - 1) !== SLASH)
             path = `${path}/`;
-        const node = mount(new Node(), tree.clean().#node);
+        const node = mount(new Node(), tree.#clean().#node);
         const endpoint = put(this.#node, path);
         if (!endpoint)
-            return false;
+            return this;
         mount(endpoint, node, this.#list.length, endpoint.paramNames);
         Reflect.apply(Array.prototype.push, this.#list, tree.#list);
-        return true;
+        return this;
     }
-    clean() {
+    #clean() {
         clean(this.#node, this.#list, this.#list = []);
         return this;
     }
+    *[Symbol.iterator]() {
+        yield* forEach(this.#node, this.#list);
+    }
     compose() {
+        this.#clean();
         const root = mount(new Node(), this.#node).build();
         const list = [...this.#list];
-        return (path: string, offset = 0, length = path.length) => {
-            if (path.charCodeAt(offset) === SLASH)
-                offset++;
-            for (const value of find(root, list, path, offset, length))
-                return value;
+        return async function (request: Request) {
+            const pathIndex = request.url.indexOf('/', 8);
+            let queryIndex = request.url.indexOf('?', pathIndex);
+            queryIndex === -1 ? request.url.length : queryIndex;
+            console.log(request.url.slice(pathIndex, queryIndex));
+            for (const { store: handler, param } of find(root, list, request.url, pathIndex + 1, queryIndex))
+                return handler({
+                    request,
+                    path: request.url.slice(pathIndex, queryIndex),
+                    pathIndex,
+                    queryIndex,
+                    param,
+                });
         };
     }
 }
 
-type Find<T> = ReturnType<Tree<T>['compose']>;
-
-export { Tree };
-export type { Path, Find };
+export { Router };

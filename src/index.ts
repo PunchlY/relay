@@ -1,39 +1,49 @@
-import { Tree } from './tree';
+import { Router } from './router';
 
-const tree = new Tree<(url: string, headers: Headers) => Response | PromiseLike<Response>>();
-
-tree.push('https://img.hellogithub.com/*', (url, headers) => {
-    headers.set('Referer', 'https://hellogithub.com/');
-    return fetch(url, { headers });
-});
-tree.push('https://:prefix.sinaimg.cn/*', (url, headers) => {
-    headers.set('Referer', 'https://weibo.com/');
-    return fetch(url, { headers });
-});
-tree.push('https://:prefix.csdnimg.cn/*', (url, headers) => {
-    headers.set('Referer', 'https://csdn.net/');
-    return fetch(url, { headers });
-});
-tree.push('https://*', (url, headers) => {
-    headers.set('Referer', url);
-    return fetch(url, { headers });
-});
-tree.push('http://*', (url, headers) => {
-    headers.set('Referer', url);
-    return fetch(url, { headers });
-});
-
-const find = tree.compose();
+const app = new Router()
+    .push('/', () => {
+        let text = '';
+        for (const [path] of app)
+            text += path, text += '\n';
+        return new Response(text);
+    })
+    .push('https://img.hellogithub.com/*', ({ request, pathIndex }) => {
+        request = new Request(request.url.slice(pathIndex + 1), request);
+        request.headers.set('Referer', 'https://hellogithub.com/');
+        return fetch(request);
+    })
+    .push('https://:prefix.sinaimg.cn/*', ({ request, pathIndex }) => {
+        request = new Request(request.url.slice(pathIndex + 1), request);
+        request.headers.set('Referer', 'https://weibo.com/');
+        return fetch(request);
+    })
+    .push('https://:prefix.csdnimg.cn/*', ({ request, pathIndex }) => {
+        request = new Request(request.url.slice(pathIndex + 1), request);
+        request.headers.set('Referer', 'https://csdn.net/');
+        return fetch(request);
+    })
+    .push('https://*', ({ request, pathIndex }) => {
+        request = new Request(request.url.slice(pathIndex + 1), request);
+        request.headers.set('Referer', request.url);
+        return fetch(request);
+    })
+    .push('http://*', ({ request, pathIndex }) => {
+        request = new Request(request.url.slice(pathIndex + 1), request);
+        request.headers.set('Referer', request.url);
+        return fetch(request);
+    });
 
 interface Env {
     ASSETS: Fetcher;
 }
 
+const appFetch = app.compose();
+
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-        const pathIndex = request.url.indexOf('/', 8);
         if (request.method !== 'GET' && request.method !== 'HEAD')
             return new Response(null, { status: 405 });
-        return find(request.url, pathIndex)?.(request.url.slice(pathIndex + 1), new Headers(request.headers)) || env.ASSETS.fetch(request);
+        console.log(request.url);
+        return await appFetch(request) ?? new Response(null, { status: 404 });
     }
 };

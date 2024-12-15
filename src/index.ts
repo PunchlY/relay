@@ -37,6 +37,4 @@ const app = new Router<Env, ExecutionContext>()
         return fetch(request);
     });
 
-export default {
-    fetch: app.compose(),
-};
+export default app;

@@ -14,29 +14,27 @@ interface Context<T> {
     queryIndex: number;
     searchParams: URLSearchParams;
     param: Record<string, string>;
-    newResponse: typeof newResponse,
 }
-type Handler<T, C> = (context: Context<T> & C) => Response | PromiseLike<Response>;
+type Handler<E, C> = (context: Context<E> & C) => Response | PromiseLike<Response>;
 
-interface Handlers extends Record<string, Handler<any, any>> { }
+interface Handlers extends Map<string, { handler: Handler<unknown, {}> | Response, paramNames?: string[]; }> { }
 
 interface Node {
-    value?: Handlers;
-}
-interface Endpoint extends Node {
-    value: Handlers;
-}
-class Node extends Map<number, Node> {
+    meta?: Handlers;
     part?: [number[], Node];
     fail?: Node;
     param?: ParamNode;
     wildcard?: WildcardNode;
-    paramNames?: string[];
+}
+interface Endpoint extends Node {
+    meta: Handlers;
+}
+class Node extends Map<number, Node> {
     constructor(public readonly deep = 0) {
         super();
     }
     isEndpoint(): this is Endpoint {
-        return 'value' in this;
+        return !!this.meta?.size;
     }
     put(charCode: number) {
         let next = super.get(charCode);
@@ -113,14 +111,9 @@ class WildcardNode extends Node {
     }
 }
 
-function put(node: Node, path: string, offset = path.charCodeAt(0) === SLASH ? 1 : path.charCodeAt(0) === ESCAPE && path.charCodeAt(1) === SLASH ? 2 : 0, paramNames: string[] = [], escape = false): Node | undefined {
-    if (offset >= path.length) {
-        if (!node.isEndpoint() && paramNames.length)
-            node.paramNames = paramNames;
-        return node;
-    }
-    // if (node.wildcard?.isEndpoint())
-    //     return;
+function put(node: Node, path: string, offset = path.charCodeAt(0) === SLASH ? 1 : path.charCodeAt(0) === ESCAPE && path.charCodeAt(1) === SLASH ? 2 : 0, paramNames: string[] = [], escape = false): { node: Node, paramNames: string[]; } {
+    if (offset >= path.length)
+        return { node, paramNames };
     const charCode = path.charCodeAt(offset);
     if (!escape) switch (charCode) {
         case ESCAPE:
@@ -131,7 +124,7 @@ function put(node: Node, path: string, offset = path.charCodeAt(0) === SLASH ? 1
             return putWildcard(node, path, offset + 1, paramNames);
     }
     if (charCode === QUESTION)
-        return;
+        throw new Error('Unauthorized character: ?');
     return put(node.put(charCode), path, offset + 1, paramNames);
 }
 function putParam(node: Node, path: string, offset: number, paramNames: string[]) {
@@ -174,12 +167,14 @@ function clean(node: Node): boolean {
     return hasEndpoint;
 }
 
-function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<[Path, Endpoint]> {
+function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<[string, Path]> {
     if (node.isEndpoint()) {
-        const path = String.raw({
-            raw: [...charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList))],
-        }, ...(node.paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as Path;
-        yield [path, node];
+        for (const [method, { paramNames }] of node.meta) {
+            const path = String.raw({
+                raw: [...charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList))],
+            }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as Path;
+            yield [method, path];
+        }
     }
     for (const [charCode, child] of node) {
         const [...charCodeListsCopy] = charCodeLists;
@@ -196,31 +191,35 @@ function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<
         yield* forEach(node.wildcard, [...charCodeLists, []]);
 }
 
-function mount<T extends Node>(root: NoInfer<T>, node: T, paramNames?: string[]) {
+function mount<T extends Node>(root: NoInfer<T>, node: T, baseParamNames?: string[]) {
     if (root.wildcard?.isEndpoint())
         return root;
     if (node.isEndpoint() && !root.isEndpoint()) {
-        root.value = node.value;
-        if (paramNames || node.paramNames)
-            root.paramNames = [...paramNames || [], ...node.paramNames || []];
+        root.meta = new Map();
+        for (const [method, { handler, paramNames }] of node.meta) {
+            root.meta.set(method, {
+                handler,
+                paramNames: baseParamNames?.length || paramNames?.length ? [...baseParamNames || [], ...paramNames || []] : undefined,
+            });
+        }
     }
     for (const [charCode, child] of node)
-        mount(root.put(charCode), child, paramNames);
+        mount(root.put(charCode), child, baseParamNames);
     if (node.param)
-        root.param = mount(root.putParam(), node.param, paramNames);
+        root.param = mount(root.putParam(), node.param, baseParamNames);
     if (node.wildcard)
-        root.wildcard = mount(root.putWildcard(), node.wildcard, paramNames);
+        root.wildcard = mount(root.putWildcard(), node.wildcard, baseParamNames);
     return root;
 }
 
-function buildContext(ctx = {} as Record<any, string> & Context<any>, request: Request, pathIndex: number, queryIndex: number, param: Record<string, string>, env: any): Context<any> {
+function buildContext(ctx = {} as Context<any>, request: Request, pathIndex: number, queryIndex: number, param: Record<string, string>, env: any): Context<any> {
     ctx.env = env;
     ctx.request = request;
     ctx.pathIndex = pathIndex;
     ctx.queryIndex = queryIndex;
-    ctx.searchParams = new URLSearchParams(request.url.slice(queryIndex + 1));
     ctx.path = request.url.slice(pathIndex, queryIndex);
-    ctx.newResponse = newResponse;
+    ctx.param = param;
+    ctx.searchParams = new URLSearchParams(request.url.slice(queryIndex + 1));
     return ctx;
 }
 
@@ -248,12 +247,28 @@ function evaluateFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => P
         if (node.isEndpoint()) {
             if (isFinite(offset))
                 code += `if(offset_${depth}+${offset}>=length||url.charCodeAt(offset_${depth}+${offset})===${QUESTION})`;
-            const index = values.push(node.value) - 1;
-            code += `if(method in value_${index}){`;
-            code += `return(0,value_${index}[method])(buildContext(ctx,request,offset_0,offset_${depth}+${offset},{`;
-            if (node.paramNames) for (const [key, paramCode] of new Map(node.paramNames.map((name, i) => [name, paramCodes[i]])))
-                code += `${JSON.stringify(key)}:${paramCode},`;
-            code += `},env))`;
+            code += 'switch(method){';
+            const metadata = new Map(node.meta);
+            const HEAD = metadata.get('HEAD'), GET = metadata.get('GET'), ALL = metadata.get('ALL');
+            metadata.delete('HEAD'), metadata.delete('GET'), metadata.delete('ALL');
+            function value({ handler, paramNames }: { handler: unknown, paramNames?: string[]; }) {
+                let ctx = `buildContext(ctx,request,offset_0,offset_${depth}+${offset},{`;
+                if (paramNames) for (const [key, paramCode] of new Map(paramNames.map((name, i) => [name, paramCodes[i]])))
+                    ctx += `${JSON.stringify(key)}:${paramCode},`;
+                ctx += `},env)`;
+                const index = values.push(handler) - 1;
+                return typeof handler === 'function' ? `value_${index}(${ctx})` : `value_${index}.clone()`;
+            }
+            if (HEAD)
+                code += `case'HEAD':return ${value(HEAD)};`;
+            else if (GET)
+                code += `case'HEAD':`;
+            if (GET)
+                code += `case'GET':return ${value(GET)};`;
+            for (const [method, meta] of metadata)
+                code += `case${JSON.stringify(method)}:return ${value(meta)};`;
+            if (ALL)
+                code += `default:return ${value(ALL)};`;
             code += '}';
         }
         if (!isFinite(offset))
@@ -359,51 +374,58 @@ function evaluateFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => P
 function buildFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => Promise<Response> {
     root = mount(new Node(), root).build();
     return async function (request, env, ctx: any) {
-        const { method, url } = request;
+        const { url } = request;
         const { length } = url;
         for (let offset = 0, count = 0; offset <= length; offset++) {
             if (url.charCodeAt(offset) === SLASH)
                 count++;
             if (count !== 3)
                 continue;
-            for (const { handler, param, queryIndex } of find(root, method, url, offset + 1, length))
-                return handler(buildContext(ctx, request, offset, queryIndex, param, env));
+            for (const res of find(root, request, env, ctx, offset, offset + 1, length))
+                return res;
             break;
         }
         return new Response(null, { status: 404 });
     };
-    function* find(root: Node, method: string, url: string, start: number, length: number, paramFragment: [number, number][] = [], index = 0): Generator<{ handler: Handler<any, any>, param: Record<string, string>, queryIndex: number; }> {
-        if (start >= length || url.charCodeAt(start) === QUESTION) {
-            if (root.isEndpoint() && method in root.value) {
+    function* find(root: Node, request: Request, env: any, ctx: any, pathIndex: number, start: number, length: number, paramFragment: [number, number][] = [], index = 0): Generator<Response | PromiseLike<Response>> {
+        if (start >= length || request.url.charCodeAt(start) === QUESTION) {
+            if (!root.isEndpoint())
+                return;
+            const meta = root.meta.get(request.method) || request.method === 'HEAD' && root.meta.get('GET') || root.meta.get('ALL');
+            if (!meta)
+                return;
+            const { handler, paramNames } = meta;
+            if (typeof handler === 'function') {
                 const param: Record<string, string> = {};
-                if (root.paramNames) for (const [index, name] of root.paramNames.entries())
-                    param[name] = url.slice(...paramFragment[index]);
-                yield { handler: root.value[method], param, queryIndex: start };
-            }
+                if (paramNames) for (const [index, name] of paramNames.entries())
+                    param[name] = String.prototype.slice.apply(request.url, paramFragment[index]);
+                yield handler(buildContext(ctx, request, pathIndex, start, param, env));
+            } else if (meta)
+                yield handler.clone();
             return;
         }
         if (root.part) PART: {
             let offset = start;
             const [charCodeList, next] = root.part;
             for (const charCode of charCodeList) {
-                if (offset < length && url.charCodeAt(offset++) === charCode)
+                if (offset < length && request.url.charCodeAt(offset++) === charCode)
                     continue;
                 break PART;
             }
-            yield* find(next, method, url, offset, length, paramFragment, index);
+            yield* find(next, request, env, ctx, pathIndex, offset, length, paramFragment, index);
         } else {
-            const next = root.get(url.charCodeAt(start));
+            const next = root.get(request.url.charCodeAt(start));
             if (next)
-                yield* find(next, method, url, start + 1, length, paramFragment, index);
+                yield* find(next, request, env, ctx, pathIndex, start + 1, length, paramFragment, index);
         }
         if (root.param) {
             if (root.param.suffix) for (let offset = start, node: Node = root.param, charCode; ; offset++) {
-                if (offset >= length || (charCode = url.charCodeAt(offset)) === QUESTION) {
+                if (offset >= length || (charCode = request.url.charCodeAt(offset)) === QUESTION) {
                     while (!node.isEndpoint() && node !== root.param)
                         node = node.fail!;
                     if (node.isEndpoint() && start < length - node.deep) {
                         paramFragment[index] = [start, offset - node.deep];
-                        yield* find(node, method, url, offset, offset, paramFragment, index + 1);
+                        yield* find(node, request, env, ctx, pathIndex, offset, offset, paramFragment, index + 1);
                     }
                     break;
                 }
@@ -418,14 +440,14 @@ function buildFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => Prom
                     if (node === root.param || start > offset - node.deep)
                         break;
                     paramFragment[index] = [start, offset - node.deep + 1];
-                    yield* find(node, method, url, offset + 1, length, paramFragment, index + 1);
+                    yield* find(node, request, env, ctx, pathIndex, offset + 1, length, paramFragment, index + 1);
                     break;
                 }
             } else for (let offset = start, charCode; ; offset++) {
-                if (offset >= length || (charCode = url.charCodeAt(offset)) === QUESTION) {
+                if (offset >= length || (charCode = request.url.charCodeAt(offset)) === QUESTION) {
                     if (root.param.isEndpoint() && start < length) {
                         paramFragment[index] = [start, offset];
-                        yield* find(root.param, method, url, offset, offset, paramFragment, index + 1);
+                        yield* find(root.param, request, env, ctx, pathIndex, offset, offset, paramFragment, index + 1);
                     }
                     break;
                 }
@@ -434,79 +456,69 @@ function buildFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => Prom
                 const next = root.param.get(SLASH);
                 if (next && start < offset) {
                     paramFragment[index] = [start, offset];
-                    yield* find(next, method, url, offset + 1, length, paramFragment, index + 1);
+                    yield* find(next, request, env, ctx, pathIndex, offset + 1, length, paramFragment, index + 1);
                 }
                 break;
             }
         }
         if (root.wildcard?.isEndpoint()) {
-            const queryIndex = url.indexOf('?', start);
+            const queryIndex = request.url.indexOf('?', start);
             if (queryIndex !== -1)
                 length = queryIndex;
             paramFragment[index] = [start, length];
-            yield* find(root.wildcard, method, url, length, length, paramFragment, index + 1);
+            yield* find(root.wildcard, request, env, ctx, pathIndex, length, length, paramFragment, index + 1);
         }
     }
 }
 
-class Router<T = void, C extends object | void = void> {
+class Router<E = void, C extends object | void = void> {
     #node = new Node();
-    on(method: string, path: string, handler: Handler<T, C>) {
-        const endpoint = put(this.#node, path);
-        if (!endpoint)
-            return this;
-        const handlers = endpoint.value ||= Object.create(null) as Handlers;
-        if (typeof handler === 'function')
-            handlers[method] ||= handler;
-        return this;
+    #evaluate;
+    constructor(evaluate = false) {
+        this.#evaluate = evaluate;
     }
-    get(path: string, handler: Handler<T, C>) {
-        Router.prototype.on.call(this, 'GET', path, handler);
-        Router.prototype.on.call(this, 'HEAD', path, handler);
-        return this;
-    }
-    post(path: string, handler: Handler<T, C>) {
-        Router.prototype.on.call(this, 'POST', path, handler);
-        return this;
-    }
-    put(path: string, handler: Handler<T, C>) {
-        Router.prototype.on.call(this, 'PUT', path, handler);
-        return this;
-    }
-    delete(path: string, handler: Handler<T, C>) {
-        Router.prototype.on.call(this, 'PUT', path, handler);
-        return this;
-    }
-    patch(path: string, handler: Handler<T, C>) {
-        Router.prototype.on.call(this, 'PATCH', path, handler);
-        return this;
-    }
-    mount(path: string, tree: Router<T>) {
-        if (path.charCodeAt(path.length - 1) !== SLASH)
-            path = `${path}/`;
-        const endpoint = put(this.#clean().#node, path);
-        if (!endpoint)
-            return this;
-        for (const _ of forEach(endpoint))
-            return this;
-        const node = mount(new Node(), tree.#clean().#node);
-        mount(endpoint, node, endpoint.paramNames);
+    on(method: string, path: string, handler: Handler<E, C>): this;
+    on(method: string, path: string, data: unknown): this;
+    on(method: string, path: string, data: unknown) {
+        const { node, paramNames } = put(this.#node, path);
+        const handlers: Handlers = node.meta ||= new Map();
+        if (!handlers.has(method))
+            handlers.set(method, {
+                handler: typeof data === 'function' ? data as Handler<any, any> : newResponse(data),
+                paramNames,
+            });
         return this;
     }
     #clean() {
         clean(this.#node);
         return this;
     }
+    mount(path: string, tree: Router<E, C>) {
+        if (path.charCodeAt(path.length - 1) !== SLASH)
+            path = `${path}/`;
+        const { node, paramNames } = put(this.#clean().#node, path);
+        for (const _ of forEach(node))
+            return this;
+        mount(node, mount(new Node(), tree.#clean().#node), paramNames);
+        return this;
+    }
     *[Symbol.iterator]() {
-        for (const [path, node] of forEach(this.#node)) {
-            for (const method in node.value)
-                yield [method, path] as const;
-        }
+        yield* forEach(this.#node);
     }
-    compose(evaluate = false) {
+    get fetch() {
         this.#clean();
-        return evaluate ? evaluateFind<T, C>(this.#node) : buildFind<T, C>(this.#node);
+        return this.#evaluate ? evaluateFind<E, C>(this.#node) : buildFind<E, C>(this.#node);
     }
+}
+const methodNames = ['GET', 'HEAD', 'DELETE', 'PUT', 'POST', 'PATCH'] as const;
+interface Router<E, C> extends Record<Lowercase<typeof methodNames[number]>, {
+    (path: string, handler: Handler<E, C>): Router<E, C>;
+    (path: string, data: unknown): Router<E, C>;
+}> { }
+for (const method of methodNames) {
+    Router.prototype[method.toLowerCase() as Lowercase<typeof methodNames[number]>] = function (path: string, data: unknown) {
+        return Router.prototype.on.call(this, method, path, data);
+    };
 }
 
 function newResponse(response: Response, status?: number, headers?: HeadersInit): Response;

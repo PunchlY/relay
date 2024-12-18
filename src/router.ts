@@ -4,39 +4,32 @@ function isParamNameChar(charCode: number) {
     return /* (0x30 <= charCode && charCode <= 0x39) || */ (0x41 <= charCode && charCode <= 0x5a) || (0x61 <= charCode && charCode <= 0x7a);
 }
 
-type Path = `/${string}`;
-
-interface Context<T> {
+type Context<E = unknown, C = {}> = {
     request: Request;
-    env: T;
+    env: E;
     path: string;
     pathIndex: number;
     queryIndex: number;
-    searchParams: URLSearchParams;
     param: Record<string, string>;
-}
-type Handler<E, C> = (context: Context<E> & C) => Response | PromiseLike<Response>;
+} & C;
+type Handler<E = unknown, C = {}> = (context: Context<E, C>) => unknown;
 
-interface Handlers extends Map<string, { handler: Handler<unknown, {}> | Response, paramNames?: string[]; }> { }
+interface Handlers extends Map<string, { handler: Handler | Response, paramNames?: string[]; }> {
+}
 
 interface Node {
-    meta?: Handlers;
+    handlers?: Handlers;
+    onRequest?: Handler;
     part?: [number[], Node];
     fail?: Node;
     param?: ParamNode;
     wildcard?: WildcardNode;
 }
-interface Endpoint extends Node {
-    meta: Handlers;
-}
 class Node extends Map<number, Node> {
     constructor(public readonly deep = 0) {
         super();
     }
-    isEndpoint(): this is Endpoint {
-        return !!this.meta?.size;
-    }
-    put(charCode: number) {
+    setChild(charCode: number) {
         let next = super.get(charCode);
         if (next)
             return next;
@@ -44,10 +37,10 @@ class Node extends Map<number, Node> {
         super.set(charCode, next);
         return next;
     }
-    putParam() {
+    setParam() {
         return this.param ??= new ParamNode();
     }
-    putWildcard() {
+    setWildcard() {
         return this.wildcard ??= new WildcardNode();
     }
     build() {
@@ -58,7 +51,7 @@ class Node extends Map<number, Node> {
                 const [charCode, next]: [number, Node] = node.entries().next().value;
                 node = next;
                 charCodeList.push(charCode);
-            } while (!node.isEndpoint() && !node.param && !node.wildcard && node.size === 1);
+            } while (!this.handlers?.size && !this.onRequest && !node.param && !node.wildcard && node.size === 1);
             node.build();
             this.part = [charCodeList, node];
         } else for (const [, node] of this) {
@@ -70,12 +63,13 @@ class Node extends Map<number, Node> {
     }
 }
 class ParamNode extends Node {
-    suffix = false;
+    declare param: undefined;
+    declare wildcard: undefined;
     fail = this;
-    putParam(): never {
+    setParam(): never {
         throw new Error('is ParamNode');
     }
-    putWildcard(): never {
+    setWildcard(): never {
         throw new Error('is ParamNode');
     }
     build() {
@@ -83,12 +77,9 @@ class ParamNode extends Node {
         for (let i = 0; i < queue.length; i++) {
             const temp = queue[i];
             for (const [charCode, node] of temp) {
-                this.suffix ||= charCode !== SLASH;
                 node.fail = temp !== this && temp.fail?.get(charCode) || this;
                 node.param?.build();
                 node.wildcard?.build();
-                if (charCode === SLASH || node.param || node.wildcard)
-                    continue;
                 queue.push(node);
             }
         }
@@ -96,14 +87,16 @@ class ParamNode extends Node {
     }
 }
 class WildcardNode extends Node {
-    put(charCode: number): never;
-    put() {
+    declare param: undefined;
+    declare wildcard: undefined;
+    setChild(charCode: number): never;
+    setChild() {
         throw new Error('is WildcardNode');
     }
-    putParam(): never {
+    setParam(): never {
         throw new Error('is WildcardNode');
     }
-    putWildcard(): never {
+    setWildcard(): never {
         throw new Error('is WildcardNode');
     }
     build() {
@@ -111,41 +104,41 @@ class WildcardNode extends Node {
     }
 }
 
-function put(node: Node, path: string, offset = path.charCodeAt(0) === SLASH ? 1 : path.charCodeAt(0) === ESCAPE && path.charCodeAt(1) === SLASH ? 2 : 0, paramNames: string[] = [], escape = false): { node: Node, paramNames: string[]; } {
+function get(node: Node, path: string, offset = path.charCodeAt(0) === SLASH ? 1 : path.charCodeAt(0) === ESCAPE && path.charCodeAt(1) === SLASH ? 2 : 0, paramNames: string[] = [], escape = false): { node: Node, paramNames: string[]; } {
     if (offset >= path.length)
         return { node, paramNames };
     const charCode = path.charCodeAt(offset);
     if (!escape) switch (charCode) {
         case ESCAPE:
-            return put(node, path, offset + 1, paramNames, true);
+            return get(node, path, offset + 1, paramNames, true);
         case PARAM:
-            return putParam(node, path, offset + 1, paramNames);
+            return getParam(node, path, offset + 1, paramNames);
         case WILDCARD:
-            return putWildcard(node, path, offset + 1, paramNames);
+            return getWildcard(node, path, offset + 1, paramNames);
     }
     if (charCode === QUESTION)
         throw new Error('Unauthorized character: ?');
-    return put(node.put(charCode), path, offset + 1, paramNames);
+    return get(node.setChild(charCode), path, offset + 1, paramNames);
 }
-function putParam(node: Node, path: string, offset: number, paramNames: string[]) {
+function getParam(node: Node, path: string, offset: number, paramNames: string[]) {
     let _offset = offset, charCode;
     while (!isNaN(charCode = path.charCodeAt(_offset)) && isParamNameChar(charCode)) _offset++;
     if (_offset === offset)
-        return put(node, path, offset - 1, paramNames, true);
+        return get(node, path, offset - 1, paramNames, true);
     paramNames.push(path.slice(offset, _offset));
-    return put(node.putParam(), path, charCode === ESCAPE ? _offset + 1 : _offset, paramNames, true);
+    return get(node.setParam(), path, charCode === ESCAPE ? _offset + 1 : _offset, paramNames, true);
 }
-function putWildcard(node: Node, path: string, offset: number, paramNames: string[]) {
+function getWildcard(node: Node, path: string, offset: number, paramNames: string[]) {
     const charCode = path.charCodeAt(offset);
     if (isNaN(charCode)) {
         paramNames.push('*');
-        return put(node.putWildcard(), path, offset + 1, paramNames);
+        return get(node.setWildcard(), path, offset + 1, paramNames);
     }
-    return put(node, path, offset - 1, paramNames, true);
+    return get(node, path, offset - 1, paramNames, true);
 }
 
 function clean(node: Node): boolean {
-    let hasEndpoint = node.isEndpoint();
+    let hasEndpoint = Boolean(node.handlers?.size);
     for (const [charCode, child] of node) {
         if (clean(child))
             hasEndpoint = true;
@@ -167,14 +160,15 @@ function clean(node: Node): boolean {
     return hasEndpoint;
 }
 
-function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<[string, Path]> {
-    if (node.isEndpoint()) {
-        for (const [method, { paramNames }] of node.meta) {
-            const path = String.raw({
-                raw: [...charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList))],
-            }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as Path;
-            yield [method, path];
-        }
+function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<[method: string, path: `/${string}`]> {
+    function path(paramNames?: string[]) {
+        return String.raw({
+            raw: [...charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList))],
+        }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as `/${string}`;
+    }
+    if (node.handlers?.size) {
+        for (const [method, { paramNames }] of node.handlers)
+            yield [method, path(paramNames)];
     }
     for (const [charCode, child] of node) {
         const [...charCodeListsCopy] = charCodeLists;
@@ -192,282 +186,329 @@ function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<
 }
 
 function mount<T extends Node>(root: NoInfer<T>, node: T, baseParamNames?: string[]) {
-    if (root.wildcard?.isEndpoint())
+    function copy<T>({ handler, paramNames }: { handler: T, paramNames?: string[]; }) {
+        if (baseParamNames?.length || paramNames?.length)
+            paramNames = [...baseParamNames || [], ...paramNames || []];
+        return { handler, paramNames };
+    }
+    if (root.wildcard?.handlers?.size)
         return root;
-    if (node.isEndpoint() && !root.isEndpoint()) {
-        root.meta = new Map();
-        for (const [method, { handler, paramNames }] of node.meta) {
-            root.meta.set(method, {
-                handler,
-                paramNames: baseParamNames?.length || paramNames?.length ? [...baseParamNames || [], ...paramNames || []] : undefined,
-            });
-        }
+    if (node.handlers?.size && !root.handlers?.size) {
+        root.handlers = new Map();
+        for (const [method, data] of node.handlers)
+            root.handlers.set(method, copy(data));
+        if (node.onRequest)
+            root.onRequest = node.onRequest;
     }
     for (const [charCode, child] of node)
-        mount(root.put(charCode), child, baseParamNames);
+        mount(root.setChild(charCode), child, baseParamNames);
     if (node.param)
-        root.param = mount(root.putParam(), node.param, baseParamNames);
+        root.param = mount(root.setParam(), node.param, baseParamNames);
     if (node.wildcard)
-        root.wildcard = mount(root.putWildcard(), node.wildcard, baseParamNames);
+        root.wildcard = mount(root.setWildcard(), node.wildcard, baseParamNames);
     return root;
 }
 
-function buildContext(ctx = {} as Context<any>, request: Request, pathIndex: number, queryIndex: number, param: Record<string, string>, env: any): Context<any> {
-    ctx.env = env;
+function Context<E, C>(request: Request, env: E, ctx: C | undefined, pathIndex: number): Context<E, C>;
+function Context(request: Request, env: any, ctx = {} as Context, pathIndex: number): Context<unknown, {}> {
     ctx.request = request;
+    ctx.env = env;
     ctx.pathIndex = pathIndex;
-    ctx.queryIndex = queryIndex;
-    ctx.path = request.url.slice(pathIndex, queryIndex);
-    ctx.param = param;
-    ctx.searchParams = new URLSearchParams(request.url.slice(queryIndex + 1));
+    ctx.queryIndex = request.url.length;
     return ctx;
 }
 
-function evaluateFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => Promise<Response> {
-    const values: any[] = [], paramNodes: any[] = [];
-    const findCode = buildFindCode(root.build(), 1);
-    let code = '';
-    if (paramNodes.length) {
-        code += 'function param(o,deep=0,n=new Map){for(let k in o)if(k.length===1)n.set(k.charCodeAt(0),param(o[k],deep+1));return n.deep=deep,n.index=o.index,n.isEnd=o.isEnd,n}';
-        code += 'function build(r,q=[r]){while(q.length){let n=q.pop();for(let[c,e]of n)e.fail=n!==r&&n.fail[c]||r,q.push(e);}return r}';
-        code += `const ${paramNodes.map((paramNode, i) => `param_${i}=build(param(${JSON.stringify(paramNode)}))`).join(',')};`;
+function evaluateFind<E, C>(root: Node): (request: Request, env: E, ctx: C) => Promise<Response> {
+    interface ParamData extends Record<number, ParamData> { next?: number, handler?: number; }
+    const values: unknown[] = [], paramDatas: ParamData[] = [];
+    const code = [...findCode()];
+    if (paramDatas.length) code.unshift(
+        'function param(o,deep=0,n=new Map){return Object.assign([],o).forEach((v,k)=>{n.set(k,param(v,deep+1)),delete o[k]}),Object.assign(n,o,{deep})}',
+        'function build(r,q=[r]){while(q.length){let n=q.pop();for(let[c,e]of n)e.fail=n!==r&&n.fail[c]||r,q.push(e);}return r}',
+        `const ${paramDatas.map((paramData, i) => `param_${i}=build(param(${JSON.stringify(paramData)}))`).join(',')};`,
+    );
+    code.unshift(`"use strict";`);
+    return Function('Context', 'newResponse', ...values.map((_, i) => `value_${i}`), code.join('\n'))(Context, newResponse, ...values);
+    function* findCode() {
+        yield 'return async function(request,env,ctx){';
+        yield 'const{method,url}=request;let{length}=url;';
+        yield `for(let offset_0=0,count=0;offset_0<=length;offset_0++){`;
+        yield `if(url.charCodeAt(offset_0)===${SLASH})count++;`;
+        yield `if(count!==3)continue;`;
+        yield 'const context=Context(request,env,ctx,offset_0);';
+        yield 'let queryIndex;';
+        yield* find(root.build(), 1);
+        yield `break}`;
+        yield 'return new Response(null,{status:404});';
+        yield '}';
     }
-    code += 'return async function(request,env,ctx){';
-    code += 'const{method,url}=request;let{length}=url;';
-    code += `for(let offset_0=0,count=0;offset_0<=length;offset_0++){`;
-    code += `if(url.charCodeAt(offset_0)===${SLASH})count++;`;
-    code += `if(count!==3)continue;`;
-    code += findCode;
-    code += `break}`;
-    code += 'return new Response(null,{status:404});';
-    code += '}';
-    return Function('buildContext', ...values.map((_, i) => `value_${i}`), code)(buildContext, ...values);
-    function buildFindCode(node: Node, offset = 0, paramCodes: string[] = [], depth = 0): string {
-        let code = '';
-        if (node.isEndpoint()) {
-            if (isFinite(offset))
-                code += `if(offset_${depth}+${offset}>=length||url.charCodeAt(offset_${depth}+${offset})===${QUESTION})`;
-            code += 'switch(method){';
-            const metadata = new Map(node.meta);
-            const HEAD = metadata.get('HEAD'), GET = metadata.get('GET'), ALL = metadata.get('ALL');
-            metadata.delete('HEAD'), metadata.delete('GET'), metadata.delete('ALL');
-            function value({ handler, paramNames }: { handler: unknown, paramNames?: string[]; }) {
-                let ctx = `buildContext(ctx,request,offset_0,offset_${depth}+${offset},{`;
-                if (paramNames) for (const [key, paramCode] of new Map(paramNames.map((name, i) => [name, paramCodes[i]])))
-                    ctx += `${JSON.stringify(key)}:${paramCode},`;
-                ctx += `},env)`;
-                const index = values.push(handler) - 1;
-                return typeof handler === 'function' ? `value_${index}(${ctx})` : `value_${index}.clone()`;
-            }
-            if (HEAD)
-                code += `case'HEAD':return ${value(HEAD)};`;
-            else if (GET)
-                code += `case'HEAD':`;
-            if (GET)
-                code += `case'GET':return ${value(GET)};`;
-            for (const [method, meta] of metadata)
-                code += `case${JSON.stringify(method)}:return ${value(meta)};`;
-            if (ALL)
-                code += `default:return ${value(ALL)};`;
-            code += '}';
+    function offset(depth: number, offset?: number) {
+        if (!offset)
+            return `offset_${depth}`;
+        return `offset_${depth}+${offset}`;
+    }
+    function paramData(node: Node, nextList: Node[], handlersList: Handlers[]) {
+        const data: ParamData = {};
+        if (node.handlers?.size)
+            data.handler = handlersList.push(node.handlers);
+        if (node.param || node.wildcard)
+            data.next = nextList.push(node);
+        for (const [charCode, child] of node) {
+            const acNode = paramData(child, nextList, handlersList);
+            data[charCode] = acNode;
         }
-        if (!isFinite(offset))
-            return code;
+        return data;
+    }
+    function param(paramNames?: string[], paramCodes?: string[]) {
+        let code = `{`;
+        if (paramNames && paramCodes) for (const [key, paramCode] of new Map(paramNames.map((name, i) => [name, paramCodes[i]])))
+            code += `${JSON.stringify(key)}:${paramCode},`;
+        code += `};`;
+        return code;
+    }
+    function* call(handlers: Handlers, paramCodes?: string[]) {
+        handlers = new Map(handlers);
+        const HEAD = handlers.get('HEAD'), GET = handlers.get('GET'), ALL = handlers.get('ALL');
+        handlers.delete('HEAD'), handlers.delete('GET'), handlers.delete('ALL');
+        yield 'switch(method){';
+        if (HEAD)
+            yield `case"HEAD":`, yield* call(HEAD);
+        else if (GET)
+            yield `case"HEAD":`;
+        if (GET)
+            yield `case"GET":`, yield* call(GET);
+        for (const [method, data] of handlers)
+            yield `case${JSON.stringify(method)}:`, yield* call(data);
+        if (ALL)
+            yield `default:`, yield* call(ALL);
+        yield '}';
+        function* call({ handler, paramNames }: { handler: unknown, paramNames?: string[]; }) {
+            const index = values.push(handler) - 1;
+            if (typeof handler !== 'function') {
+                yield `return value_${index}.clone();`;
+                return;
+            }
+            yield '{';
+            yield `context.param=${param(paramNames, paramCodes)};`;
+            yield `context.queryIndex=length;`;
+            yield `const res=value_${index}(context);`;
+            yield `if(typeof res==="undefined")return new Response(null,{status:404});`;
+            yield 'return newResponse(res);';
+            yield '}';
+        }
+    }
+    function* find(node: Node, pointer: number): Generator<string> {
+        if (node.handlers?.size) {
+            yield `if(${offset(0, pointer)}===length||url.charCodeAt(${offset(0, pointer)})===${QUESTION}){`;
+            yield `length=${offset(0, pointer)};`;
+            yield* call(node.handlers);
+            yield '}';
+        }
+        if (!isFinite(pointer))
+            return;
         if (node.part) {
             const [charCodeList, next] = node.part;
-            code += `if(`;
-            code += charCodeList.map((charCode, index) => `url.charCodeAt(offset_${depth}+${offset + index})===${charCode}`).join('&&');
-            code += '){';
-            code += buildFindCode(next, offset + charCodeList.length, paramCodes, depth);
-            code += `}`;
+            yield `if(${offset(0, pointer + charCodeList.length)}<=length`;
+            for (const [index, charCode] of charCodeList.entries())
+                yield `&&url.charCodeAt(${offset(0, pointer + index)})===${charCode}`;
+            yield '){';
+            yield* find(next, pointer + charCodeList.length);
+            yield `}`;
         } else if (node.size) {
-            code += `switch(url.charCodeAt(offset_${depth}+${offset})){`;
-            code += `case ${QUESTION}:{length=offset_${depth}+${offset};break}`;
+            yield `switch(url.charCodeAt(${offset(0, pointer)})){`;
             for (const [charCode, child] of node) {
-                code += `case ${charCode}:{`;
-                code += buildFindCode(child, offset + 1, paramCodes, depth);
-                code += `break}`;
+                yield `case ${charCode}:{`;
+                yield* find(child, pointer + 1);
+                yield `break}`;
             }
-            code += `}`;
+            yield `}`;
         }
         if (node.param) {
-            if (node.param.suffix) {
-                const nodeList: [{ isEnd: boolean, index?: number; }, Node][] = [];
-                let endCount = 0;
-                const index = paramNodes.push((function param(node: Node, data: any = {}, isEnd?: boolean) {
-                    data.isEnd = isEnd || undefined;
-                    if (isEnd)
-                        endCount++;
-                    if (isEnd || node.isEndpoint())
-                        data.index = nodeList.push([data, node]);
-                    if (!isEnd) for (const [charCode, child] of node) {
-                        const acNode = param(child, {}, Boolean(charCode === SLASH || child.param || child.wildcard));
-                        data[String.fromCharCode(charCode)] = acNode;
-                    }
-                    return data;
-                })(node.param)) - 1;
-                code += `for(let node_${depth}=param_${index},offset_${depth + 1}=offset_${depth}+${offset},charCode;;offset_${depth + 1}++){`;
-                code += `if(offset_${depth + 1}>=length||(charCode=url.charCodeAt(offset_${depth + 1}))===${QUESTION}){length=offset_${depth + 1};`;
-                if (nodeList.length - endCount) {
-                    code += `if(offset_${depth}+${offset}<length-node_${depth}.deep){`;
-                    code += `while(!node_${depth}.index&&node_${depth}!==param_${index})node_${depth}=node_${depth}.fail;`;
-                    code += `switch(node_${depth}.index){`;
-                    for (const [{ isEnd, index }, next] of nodeList) {
-                        if (isEnd)
-                            continue;
-                        code += `case ${index}:{`;
-                        code += buildFindCode(next, Infinity, paramCodes && [...paramCodes, `url.slice(offset_${depth}+${offset},length-node_${depth}.deep)`], depth);
-                        code += `break}`;
-                    }
-                    code += '}';
-                    code += '}';
+            yield `if(url.charCodeAt(${offset(0, pointer)})!==${SLASH}){`;
+            yield* findParam(node.param, 0, pointer + 1, []);
+            yield '}';
+        }
+        if (node.wildcard)
+            yield* findWildcard(node.wildcard, 0, pointer, [`url.slice(${offset(0, pointer)},length)`]);
+    }
+    function* findParam(node: ParamNode, depth: number, pointer: number, paramCodes: string[], start: [depth: number, pointer: number] = [depth, pointer - 1], nextList: Node[] = [], handlersList: Handlers[] = [], index = paramDatas.push(paramData(node, nextList, handlersList)) - 1, set?: Set<Node>): Generator<string> {
+        if (!set) {
+            set = new Set<Node>();
+            yield 'let slashIndex;';
+        }
+        yield `for(let node_${depth}=param_${index},${offset(depth + 1)}=${offset(depth, pointer)},charCode;;${offset(depth + 1)}++){`;
+        yield `if(${offset(depth + 1)}===length||(charCode=url.charCodeAt(${offset(depth + 1)}))===${QUESTION}){`;
+        yield `length=${offset(depth + 1)};`;
+        yield `while(!node_${depth}.handler&&node_${depth}!==param_${index})node_${depth}=node_${depth}.fail;`;
+        yield `if(!node_${depth}.handler)break;`;
+        yield `if(slashIndex&&slashIndex<${offset(depth + 1)}-node_${depth}.deep)break;`;
+        yield `switch(node_${depth}.handler){`;
+        for (const [index, handlers] of handlersList.entries()) {
+            yield `case ${index + 1}:{`;
+            yield* call(handlers, [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-node_${depth}.deep)`]);
+            yield `break}`;
+        }
+        yield '}';
+        yield 'break}';
+        yield `if(!slashIndex&&charCode===${SLASH})slashIndex=${offset(depth + 1)};`;
+        yield `let node=node_${depth}.get(charCode);`;
+        yield `while(!node&&node_${depth}!==param_${index})node_${depth}=node_${depth}.fail,node=node_${depth}.get(charCode);`;
+        yield `if(node)node_${depth}=node;`;
+        yield `if(slashIndex&&slashIndex<=${offset(depth + 1)}-node_${depth}.deep)break;`;
+        if (nextList.length && set.size < nextList.length) {
+            yield `if(node_${depth}.next){switch(node_${depth}.next){`;
+            for (const [index, next] of nextList.entries()) {
+                if (set.has(next))
+                    continue;
+                yield `case ${index + 1}:{`;
+                if (next.size || next.handlers?.size)
+                    yield* findParam(node, depth + 1, 1, paramCodes, start, nextList, handlersList, index, new Set([...set, next]));
+                const paramCodes_1 = [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-node_${depth}.deep+1)`];
+                if (next.param) {
+                    yield `if(${offset(depth + 1, 1)}<length&&url.charCodeAt(${offset(depth + 1, 1)})!==${SLASH}){`;
+                    yield* findParam(next.param, depth + 1, 2, paramCodes_1);
+                    yield '}';
                 }
-                code += 'break}';
-                code += `let node=node_${depth}.get(charCode);`;
-                code += `while(!node&&node_${depth}!==param_${index})node_${depth}=node_${depth}.fail,node=node_${depth}.get(charCode);if(node)node_${depth}=node;`;
-                if (endCount) {
-                    code += `if(node_${depth}.isEnd){`;
-                    code += `if(offset_${depth}+${offset}<=offset_${depth + 1}-node_${depth}.deep){`;
-                    code += `switch(node_${depth}.index){`;
-                    for (const [{ isEnd, index }, next] of nodeList) {
-                        if (!isEnd)
-                            continue;
-                        code += `case ${index}:{`;
-                        code += buildFindCode(next, 1, paramCodes && [...paramCodes, `url.slice(offset_${depth}+${offset},offset_${depth + 1}-node_${depth}.deep+1)`], depth + 1);
-                        code += `break}`;
-                    }
-                    code += '}';
-                    code += '}';
-                    code += 'break}';
-                }
-                code += `if(charCode===${SLASH})break;`;
-                code += '}';
-            } else {
-                code += `for(let offset_${depth + 1}=offset_${depth}+${offset},charCode;;offset_${depth + 1}++){`;
-                code += `if(offset_${depth + 1}>=length||(charCode=url.charCodeAt(offset_${depth + 1}))===${QUESTION}){length=offset_${depth + 1};`;
-                if (node.param.isEndpoint()) {
-                    code += `if(offset_${depth}+${offset}<length){`;
-                    code += buildFindCode(node.param, Infinity, paramCodes && [...paramCodes, `url.slice(offset_${depth}+${offset},length)`], depth);
-                    code += '}';
-                }
-                code += 'break}';
-                code += `if(charCode===${SLASH}){`;
-                if (node.param.has(SLASH)) {
-                    code += `if(offset_${depth}+${offset}!==offset_${depth + 1}){`;
-                    code += buildFindCode(node.param.get(SLASH)!, 1, paramCodes && [...paramCodes, `url.slice(offset_${depth}+${offset},offset_${depth + 1})`], depth + 1);
-                    code += '}';
-                }
-                code += 'break}';
-                code += '}';
+                if (next.wildcard)
+                    yield* findWildcard(next.wildcard, depth, 0, paramCodes_1);
+                yield `break}`;
             }
+            yield '}break}';
         }
-        if (node.wildcard?.isEndpoint()) {
-            code += `const queryIndex=url.indexOf('?',offset_${depth}+${offset});if(queryIndex!==-1)length=queryIndex;`;
-            code += `if(offset_${depth}+${offset}<length){`;
-            code += buildFindCode(node.wildcard, Infinity, paramCodes && [...paramCodes, `url.slice(offset_${depth}+${offset},length)`], depth);
-            code += '}';
-        }
-        return code;
+        yield '}';
+    }
+    function* findWildcard(node: WildcardNode, depth: number, pointer: number, paramCodes: string[]): Generator<string> {
+        if (!node.handlers?.size)
+            return;
+        yield `if(${offset(depth, pointer)}<length){`;
+        yield 'if(!queryIndex){';
+        yield `queryIndex=url.indexOf('?',${offset(depth, pointer)});`;
+        yield 'if(queryIndex!==-1)length=queryIndex;';
+        yield '}';
+        yield* call(node.handlers, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
+        yield '}';
     }
 }
 
-function buildFind<T, C>(root: Node): (request: Request, env: T, ctx: C) => Promise<Response> {
+function buildFind<E, C>(root: Node): (request: Request, env: E, ctx: C) => Promise<Response> {
     root = mount(new Node(), root).build();
-    return async function (request, env, ctx: any) {
-        const { url } = request;
-        const { length } = url;
+    return async function (request, env, ctx) {
+        const { url } = request, { length } = url;
         for (let offset = 0, count = 0; offset <= length; offset++) {
             if (url.charCodeAt(offset) === SLASH)
                 count++;
             if (count !== 3)
                 continue;
-            for (const res of find(root, request, env, ctx, offset, offset + 1, length))
-                return res;
+            for await (const res of find(Context(request, env, ctx, offset), root, offset + 1))
+                if (typeof res === 'undefined')
+                    return new Response(null, { status: 404 });
+                else
+                    return newResponse(res);
             break;
         }
         return new Response(null, { status: 404 });
     };
-    function* find(root: Node, request: Request, env: any, ctx: any, pathIndex: number, start: number, length: number, paramFragment: [number, number][] = [], index = 0): Generator<Response | PromiseLike<Response>> {
-        if (start >= length || request.url.charCodeAt(start) === QUESTION) {
-            if (!root.isEndpoint())
-                return;
-            const meta = root.meta.get(request.method) || request.method === 'HEAD' && root.meta.get('GET') || root.meta.get('ALL');
-            if (!meta)
-                return;
-            const { handler, paramNames } = meta;
-            if (typeof handler === 'function') {
-                const param: Record<string, string> = {};
-                if (paramNames) for (const [index, name] of paramNames.entries())
-                    param[name] = String.prototype.slice.apply(request.url, paramFragment[index]);
-                yield handler(buildContext(ctx, request, pathIndex, start, param, env));
-            } else if (meta)
-                yield handler.clone();
-            return;
+    function param(url: string, paramNames: string[], paramFragment: [number, number][]) {
+        const param: Record<string, string> = {};
+        if (paramNames) for (const [index, name] of paramNames.entries())
+            param[name] = String.prototype.slice.apply(url, paramFragment[index]);
+        return param;
+    }
+    async function* call(context: Context, handlers: Handlers, paramFragment?: [number, number][]) {
+        const { method, url } = context.request;
+        const data = handlers.get(method) || method === 'HEAD' && handlers.get('GET') || handlers.get('ALL');
+        if (!data)
+            return false;
+        const { handler, paramNames } = data;
+        if (typeof handler === 'function') {
+            context.path = url.slice(context.pathIndex, context.queryIndex);
+            context.param = paramNames && paramFragment ? param(url, paramNames, paramFragment) : {};
+            yield handler(context);
+        } else
+            yield handler.clone();
+        return true;
+    }
+    async function* find(context: Context, root: Node, start: number): AsyncGenerator<unknown, boolean> {
+        const { queryIndex: length, request: { url } } = context;
+        if (start === length || url.charCodeAt(start) === QUESTION) {
+            context.queryIndex = start;
+            if (root.handlers?.size)
+                return yield* call(context, root.handlers);
+            return false;
         }
         if (root.part) PART: {
             let offset = start;
             const [charCodeList, next] = root.part;
             for (const charCode of charCodeList) {
-                if (offset < length && request.url.charCodeAt(offset++) === charCode)
+                if (offset < length && url.charCodeAt(offset++) === charCode)
                     continue;
                 break PART;
             }
-            yield* find(next, request, env, ctx, pathIndex, offset, length, paramFragment, index);
+            if (yield* find(context, next, offset))
+                return true;
         } else {
-            const next = root.get(request.url.charCodeAt(start));
-            if (next)
-                yield* find(next, request, env, ctx, pathIndex, start + 1, length, paramFragment, index);
+            const next = root.get(url.charCodeAt(start));
+            if (next && (yield* find(context, next, start + 1)))
+                return true;
         }
-        if (root.param) {
-            if (root.param.suffix) for (let offset = start, node: Node = root.param, charCode; ; offset++) {
-                if (offset >= length || (charCode = request.url.charCodeAt(offset)) === QUESTION) {
-                    while (!node.isEndpoint() && node !== root.param)
-                        node = node.fail!;
-                    if (node.isEndpoint() && start < length - node.deep) {
-                        paramFragment[index] = [start, offset - node.deep];
-                        yield* find(node, request, env, ctx, pathIndex, offset, offset, paramFragment, index + 1);
-                    }
-                    break;
-                }
-                let cnode = node.get(charCode);
-                while (!cnode && node !== root.param) {
+        if (root.param && url.charCodeAt(start) !== SLASH && (yield* findParam(context, root.param, root.param, start, start + 1, 0, 0, [])))
+            return true;
+        if (root.wildcard && (yield* findWildcard(context, root.wildcard, start, 0, [])))
+            return true;
+        return false;
+    }
+    async function* findParam(context: Context, root: ParamNode, node: Node, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], set?: Set<Node>): AsyncGenerator<unknown, boolean> {
+        const { queryIndex: length, request: { url } } = context;
+        for (let charCode; ; offset++) {
+            if (offset === length || (charCode = url.charCodeAt(offset)) === QUESTION) {
+                context.queryIndex = offset;
+                while (!node.handlers?.size && node !== root)
                     node = node.fail!;
-                    cnode = node.get(charCode);
-                }
-                if (cnode)
-                    node = cnode;
-                if (charCode === SLASH || node.param || node.wildcard) {
-                    if (node === root.param || start > offset - node.deep)
-                        break;
-                    paramFragment[index] = [start, offset - node.deep + 1];
-                    yield* find(node, request, env, ctx, pathIndex, offset + 1, length, paramFragment, index + 1);
+                if (slashIndex && slashIndex < offset - node.deep)
                     break;
-                }
-            } else for (let offset = start, charCode; ; offset++) {
-                if (offset >= length || (charCode = request.url.charCodeAt(offset)) === QUESTION) {
-                    if (root.param.isEndpoint() && start < length) {
-                        paramFragment[index] = [start, offset];
-                        yield* find(root.param, request, env, ctx, pathIndex, offset, offset, paramFragment, index + 1);
-                    }
+                if (!node.handlers?.size)
                     break;
-                }
-                if (charCode !== SLASH)
+                paramFragment[paramIndex] = [start, offset - node.deep];
+                return yield* call(context, node.handlers, paramFragment);
+            }
+            if (!slashIndex && charCode === SLASH)
+                slashIndex = offset;
+            let cnode = node.get(charCode);
+            while (!cnode && node !== root) {
+                node = node.fail!;
+                cnode = node.get(charCode);
+            }
+            if (cnode)
+                node = cnode;
+            if (slashIndex && slashIndex <= offset - node.deep)
+                break;
+            if (node.param || node.wildcard) {
+                if (set?.has(node))
                     continue;
-                const next = root.param.get(SLASH);
-                if (next && start < offset) {
-                    paramFragment[index] = [start, offset];
-                    yield* find(next, request, env, ctx, pathIndex, offset + 1, length, paramFragment, index + 1);
-                }
+                (set ??= new Set()).add(node);
+                if (node.size || node.handlers?.size)
+                    if (yield* findParam(context, root, node, start, offset + 1, slashIndex, paramIndex, paramFragment, set))
+                        return true;
+                paramFragment[paramIndex] = [start, offset - node.deep + 1];
+                if (node.param && offset + 1 < length && url.charCodeAt(offset + 1) !== SLASH && (yield* findParam(context, node.param, node.param, offset + 1, offset + 2, 0, paramIndex + 1, paramFragment, set)))
+                    return true;
+                if (node.wildcard && (yield* findWildcard(context, node.wildcard, offset, paramIndex + 1, paramFragment)))
+                    return true;
                 break;
             }
         }
-        if (root.wildcard?.isEndpoint()) {
-            const queryIndex = request.url.indexOf('?', start);
-            if (queryIndex !== -1)
-                length = queryIndex;
-            paramFragment[index] = [start, length];
-            yield* find(root.wildcard, request, env, ctx, pathIndex, length, length, paramFragment, index + 1);
-        }
+        return false;
+    }
+    async function* findWildcard(content: Context, root: WildcardNode, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, boolean> {
+        if (!root.handlers?.size)
+            return false;
+        const queryIndex = content.request.url.indexOf('?', start);
+        if (queryIndex !== -1)
+            content.queryIndex = queryIndex;
+        paramFragment[paramIndex] = [start, content.queryIndex];
+        if (yield* call(content, root.handlers, paramFragment))
+            return true;
+        return false;
     }
 }
 
@@ -477,16 +518,25 @@ class Router<E = void, C extends object | void = void> {
     constructor(evaluate = false) {
         this.#evaluate = evaluate;
     }
+    on(method: typeof methodNames[number], path: string, handler: Handler<E, C>): this;
+    on(method: typeof methodNames[number], path: string, data: unknown): this;
     on(method: string, path: string, handler: Handler<E, C>): this;
     on(method: string, path: string, data: unknown): this;
-    on(method: string, path: string, data: unknown) {
-        const { node, paramNames } = put(this.#node, path);
-        const handlers: Handlers = node.meta ||= new Map();
-        if (!handlers.has(method))
-            handlers.set(method, {
-                handler: typeof data === 'function' ? data as Handler<any, any> : newResponse(data),
-                paramNames,
-            });
+    on(type: string, path: string, data: unknown) {
+        const { node, paramNames } = get(this.#node, path);
+        const handlers: Handlers = node.handlers ||= new Map();
+        const method = type.toUpperCase();
+        if (handlers.has(method))
+            return this;
+        handlers.set(method, {
+            handler: typeof data === 'function' ? data as Handler : newResponse(data),
+            paramNames,
+        });
+        return this;
+    }
+    onRequest(handler: Handler<E, C>) {
+        if (typeof handler === 'function')
+            this.#node.onRequest ??= handler as Handler;
         return this;
     }
     #clean() {
@@ -496,7 +546,7 @@ class Router<E = void, C extends object | void = void> {
     mount(path: string, tree: Router<E, C>) {
         if (path.charCodeAt(path.length - 1) !== SLASH)
             path = `${path}/`;
-        const { node, paramNames } = put(this.#clean().#node, path);
+        const { node, paramNames } = get(this.#clean().#node, path);
         for (const _ of forEach(node))
             return this;
         mount(node, mount(new Node(), tree.#clean().#node), paramNames);
@@ -521,7 +571,10 @@ for (const method of methodNames) {
     };
 }
 
+const AsyncGeneratorFunction = (async function* () { }).constructor as AsyncGeneratorFunction;
+
 function newResponse(response: Response, status?: number, headers?: HeadersInit): Response;
+function newResponse(stream?: (...args: any[]) => AsyncGenerator, status?: number, headers?: HeadersInit): Response;
 function newResponse(body: BodyInit | null, status?: number, headers?: HeadersInit): Response;
 function newResponse(data: number | bigint | string | object, status?: number, headers?: HeadersInit): Response;
 function newResponse(data?: undefined, status?: number, headers?: HeadersInit): Response;
@@ -531,20 +584,26 @@ function newResponse(data: unknown, status?: number, headers?: HeadersInit) {
         case 'bigint':
             return Response.json(data.toString(), { status, headers });
         case 'string':
-            return new Response(data, { status, headers: headers ?? { 'Content-Type': 'text/plain; charset=utf8' } });
+            return new Response(data, { status, headers });
         case 'object':
-            if (data instanceof Response)
-                return new Response(data.body, { ...data, status: status ?? data.status, headers: headers ?? data.headers });
-            if (data instanceof Blob)
+            if (data instanceof Response) {
+                if (!status && !headers)
+                    return data.clone();
+                status ??= data.status;
+                headers ??= data.headers;
+                return new Response(data.body, { status, headers });
+            }
+            if (data === null || data instanceof Blob || data instanceof ReadableStream || data instanceof FormData || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || data instanceof URLSearchParams || data instanceof FormData)
                 return new Response(data, { status, headers });
-            if (data === null || data instanceof ReadableStream || data instanceof FormData || data instanceof URLSearchParams || data instanceof ArrayBuffer || ArrayBuffer.isView(data))
-                return new Response(data, { status, headers: headers ?? { 'Content-Type': 'text/plain; charset=utf8' } });
-            return Response.json(null, { status, headers });
+            break;
         case 'undefined':
-            return new Response(null, { status, headers: headers ?? { 'Content-Type': 'text/plain; charset=utf8' } });
-        default:
-            return Response.json(data, { status, headers });
+            return new Response(null, { status, headers });
+        case 'function':
+            if (!(data instanceof AsyncGeneratorFunction))
+                break;
+            return new Response(data as any, { status, headers });
     }
+    return Response.json(data, { status, headers });
 }
 
 export { Router, newResponse };

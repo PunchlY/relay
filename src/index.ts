@@ -11,28 +11,24 @@ const app = new Router<Env, ExecutionContext>()
             text += `${method} ${path}\n`;
         return text;
     })
-    .mount('https://', new Router<Env, ExecutionContext & { to: string; }>()
+    .mount('https://', new Router<Env, ExecutionContext & { to: Request; }>()
         .onRequest((ctx) => {
-            ctx.to = `https://${ctx.request.url.slice(ctx.routeIndex)}`;
+            ctx.to = new Request(`https://${ctx.request.url.slice(ctx.routeIndex)}`, { headers: ctx.request.headers });
         })
-        .get('img.hellogithub.com/*', ({ request, to }) => {
-            request = new Request(to, request);
+        .get('img.hellogithub.com/*', ({ to: request }) => {
             request.headers.set('Referer', 'https://hellogithub.com/');
             return fetch(request);
         })
-        .get(':prefix.sinaimg.cn/*', ({ request, to }) => {
-            request = new Request(to, request);
+        .get(':prefix.sinaimg.cn/*', ({ to: request }) => {
             request.headers.set('Referer', 'https://weibo.com/');
             return fetch(request);
         })
-        .get(':prefix.csdnimg.cn/*', ({ request, to }) => {
-            request = new Request(to, request);
+        .get(':prefix.csdnimg.cn/*', ({ to: request }) => {
             request.headers.set('Referer', 'https://csdn.net/');
             return fetch(request);
         })
-        .get('*', ({ request, to }) => {
-            request = new Request(to, request);
-            request.headers.set('Referer', to);
+        .get('*', ({ to: request }) => {
+            request.headers.set('Referer', request.url);
             return fetch(request);
         })
     );

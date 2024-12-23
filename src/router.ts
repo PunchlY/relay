@@ -1,4 +1,4 @@
-import { SLASH, QUESTION, createNode } from './tree';
+import { SLASH, QUESTION, HASH, createNode } from './tree';
 import type { Node, ParamNode, WildcardNode } from './tree';
 
 const Method = ['GET', 'DELETE', 'PUT', 'POST', 'PATCH'] as const;
@@ -6,43 +6,41 @@ type Method = typeof Method[number];
 
 const AsyncGeneratorFunction = (async function* () { }).constructor as AsyncGeneratorFunctionConstructor;
 
-function newResponse(response: Response, status?: number, headers?: HeadersInit): Response;
-function newResponse(stream?: (...args: any[]) => AsyncGenerator, status?: number, headers?: HeadersInit): Response;
-function newResponse(body: BodyInit | null, status?: number, headers?: HeadersInit): Response;
-function newResponse(data: number | bigint | string | object, status?: number, headers?: HeadersInit): Response;
-function newResponse(data?: undefined, status?: number, headers?: HeadersInit): Response;
-function newResponse(data: unknown, status?: number, headers?: HeadersInit): Response;
-function newResponse(data: unknown, status?: number, headers?: HeadersInit) {
+function newResponse(response: Response): Response;
+function newResponse(stream?: (...args: any[]) => AsyncGenerator, init?: ResponseInit): Response;
+function newResponse(body: BodyInit | null, init?: ResponseInit): Response;
+function newResponse(data: number | bigint | string | object, init?: ResponseInit): Response;
+function newResponse(data?: undefined, init?: ResponseInit): Response;
+function newResponse(data: unknown, init?: ResponseInit): Response;
+function newResponse(data: unknown, init?: ResponseInit) {
     switch (typeof data) {
         case 'string':
-            return new Response(data, { status, headers });
+            return new Response(data, init);
         case 'object':
             if (data instanceof Response)
-                return new Response(data.clone().body, { status: status ?? data.status, headers: headers ?? data.headers });
+                return data;
             if (data === null || data instanceof Blob || data instanceof ReadableStream || data instanceof FormData || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || data instanceof URLSearchParams || data instanceof FormData)
-                return new Response(data, { status, headers });
+                return new Response(data, init);
             break;
         case 'undefined':
-            return new Response(null, { status, headers });
+            return new Response(null, init);
         case 'function':
             if (data instanceof AsyncGeneratorFunction)
-                return new Response(data as any, { status, headers });
+                return new Response(data as any, init);
             break;
     }
-    return Response.json(data, { status, headers });
+    return Response.json(data, init);
 }
 
 type Context<E = unknown, C = {}> = {
     readonly request: Request;
     readonly response?: Response;
     readonly env: E;
-    readonly path: string;
     readonly pathIndex: number;
     readonly routeIndex: number;
-    readonly queryIndex: number;
+    readonly searchIndex: number;
     readonly params: Readonly<Record<string, string>>;
-    status?: number;
-    headers?: HeadersInit;
+    readonly set: ResponseInit;
 } & C;
 
 type Handler<E = unknown, C = {}> = (context: Context<E, C>) => unknown;
@@ -66,7 +64,7 @@ function build(root: Node<Meta>, mode = -1, buildList = new Set<Node<Meta>>()) {
         const charCodeList: number[] = [];
         let node: Node<Meta> = root;
         do {
-            const [charCode, next]: [number, Node<Meta>] = node.entries().next().value;
+            const [charCode, next] = node.entries().next().value!;
             node = next;
             charCodeList.push(charCode);
         } while (!node.isEndpoint && !node.param && !node.wildcard && node.size === 1);
@@ -111,10 +109,11 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
         yield 'context.env=env;';
         yield `context.pathIndex=${offset(0)};`;
         yield 'context.params={};';
-        yield 'let queryIndex;';
+        yield 'context.set={};';
+        yield 'let searchIndex,charCode;';
         yield* find(root, 0, 1, []);
         yield `break}`;
-        yield* onNotFound();
+        yield 'return new Response(null,{status:404})';
         yield '}';
         if (values.size) {
             yield 'const[';
@@ -142,7 +141,7 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
             yield `const ${paramDatas.map((paramData, i) => `param_${i}=build(param(${JSON.stringify(paramData)}))`).join(',')};`;
         }
         yield 'return fetch;';
-    }()].join('\n')) as (newResponse: (data: unknown, status?: number, headers?: HeadersInit) => Response | PromiseLike<Response>, values: unknown[]) => (request: Request, env: E, ctx: C) => Promise<Response>;
+    }()].join('\n')) as (newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>, values: unknown[]) => (request: Request, env: E, ctx: C) => Promise<Response>;
     return { Fetch, values: [...values.keys()] };
     function offset<D extends number>(depth: D): `offset_${D}`;
     function offset<D extends number, P extends number>(depth: D, offset: P): `offset_${D}+${P}`;
@@ -180,16 +179,9 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
             yield `context.params[${JSON.stringify(key)}]=${paramCode};`;
     }
     function* onRequest(handler: ((...args: any[]) => any) | Function, paramNames?: string[], paramCodes?: string[]) {
-        yield `context.queryIndex??=length;`;
-        yield `context.path??=url.slice(${offset(0)}, length);`;
         if (paramNames && paramCodes)
             yield* param(paramNames, paramCodes);
-        yield `if(typeof (response=await ${value(handler)}(context))!=="undefined")return response=await newResponse(response,context.status,context.headers);`;
-    }
-    function* onNotFound(notFound?: Handler) {
-        if (notFound)
-            yield `if(typeof (response=await ${value(notFound)}(context))!=="undefined")return response=await newResponse(response,context.status,context.headers);`;
-        yield 'return response=new Response(null,{status:404})';
+        yield `if(typeof (response=await ${value(handler)}(context))!=="undefined")return response=await newResponse(response,context.set);`;
     }
     function* response(handlers: Handlers, { notFound }: Meta, paramCodes?: string[]) {
         handlers = new Map(handlers);
@@ -207,7 +199,9 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
         if (ALL)
             yield `default:`, yield* call(ALL);
         yield '}';
-        yield* onNotFound(notFound);
+        if (notFound)
+            yield* onRequest(notFound);
+        yield 'return response=new Response(null,{status:404})';
         function* call({ handler, paramNames }: { handler: unknown, paramNames?: string[]; }) {
             if (typeof handler === 'function') {
                 yield '{';
@@ -222,16 +216,16 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
         if (root.isRoot) {
             yield `context.routeIndex=${offset(depth, pointer)};`;
             if (root.meta.onRequest) {
-                yield 'if(!queryIndex){';
-                yield `for(queryIndex=${offset(depth, pointer)};queryIndex<length&&url.charCodeAt(queryIndex)!==${QUESTION};queryIndex++);`;
-                yield 'length=queryIndex;';
+                yield 'if(!searchIndex){';
+                yield `for(searchIndex=${offset(depth, pointer)};searchIndex<length&&(charCode=url.charCodeAt(searchIndex))!==${QUESTION}&&charCode!==${HASH};searchIndex++);`;
+                yield 'context.searchIndex=length=searchIndex;';
                 yield '}';
                 yield* onRequest(root.meta.onRequest);
             }
         }
         if (root.meta.handlers?.size) {
-            yield `if(${offset(depth, pointer)}===length||url.charCodeAt(${offset(depth, pointer)})===${QUESTION}){`;
-            yield `length=${offset(depth, pointer)};`;
+            yield `if(${offset(depth, pointer)}===length||(charCode=url.charCodeAt(${offset(depth, pointer)}))===${QUESTION}||charCode===${HASH}){`;
+            yield `context.searchIndex=length=${offset(depth, pointer)};`;
             yield* response(root.meta.handlers, root.root.meta, paramCodes);
             yield '}';
         }
@@ -257,7 +251,13 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
         if (root.wildcard)
             yield* findWildcard(root.wildcard, depth, pointer, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
         if (root.isRoot) {
-            yield* onNotFound(root.meta.notFound);
+            if (root.meta.notFound) {
+                yield 'if(!searchIndex){';
+                yield `for(searchIndex=${offset(depth, pointer)};searchIndex<length&&(charCode=url.charCodeAt(searchIndex))!==${QUESTION}&&charCode!==${HASH};searchIndex++);`;
+                yield 'context.searchIndex=length=searchIndex;';
+                yield '}';
+                yield* onRequest(root.meta.notFound);
+            }
         }
     }
     function* findParam(root: ParamNode<Meta> | Node<Meta>, depth: number, pointer: number, paramCodes: string[], start: [depth: number, pointer: number] = [depth, pointer], mountList: Node<Meta>[] = [], nextList = new Map<number, Node<Meta>>(), handlersList: Handlers[] = [], index = paramDatas.push(paramData(root, mountList, nextList, handlersList)) - 1): Generator<string> {
@@ -265,10 +265,10 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
         const notFoundLabel = `NOTFOUND_${start[0]}`;
         const nextParamCodes = [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-${nodeName}.deep+1)`];
         if (root.isParamNode()) {
-            yield `if(${offset(depth, pointer)}<length&&url.charCodeAt(${offset(depth, pointer)})!==${SLASH})${notFoundLabel}:{`;
+            yield `if(${offset(depth, pointer)}<length&&(charCode=url.charCodeAt(${offset(depth, pointer)}))!==${SLASH}&&charCode!==${QUESTION}&&charCode!==${HASH})${notFoundLabel}:{`;
             yield `let ${nodeName}=param_${index},slashIndex;`;
         }
-        yield `for(let ${offset(depth + 1)}=${offset(depth, pointer)},charCode;${offset(depth + 1)}<length&&(charCode=url.charCodeAt(${offset(depth + 1)}))!==${QUESTION}||(length=${offset(depth + 1)},false);${offset(depth + 1)}++){`;
+        yield `for(let ${offset(depth + 1)}=${offset(depth, pointer)};${offset(depth + 1)}<length&&(charCode=url.charCodeAt(${offset(depth + 1)}))!==${QUESTION}&&charCode!==${HASH}||(context.searchIndex=length=${offset(depth + 1)},false);${offset(depth + 1)}++){`;
         yield `let node=${nodeName}.get(charCode);`;
         yield `while(!node&&${nodeName}!==param_${index})${nodeName}=${nodeName}.fail,node=${nodeName}.get(charCode);`;
         yield `if(node)${nodeName}=node;`;
@@ -319,9 +319,9 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
         if (!root.meta.handlers?.size)
             return;
         yield `if(${offset(depth, pointer)}<length){`;
-        yield 'if(!queryIndex){';
-        yield `for(queryIndex=${offset(depth, pointer)};queryIndex<length&&url.charCodeAt(queryIndex)!==${QUESTION};queryIndex++);`;
-        yield 'length=queryIndex;';
+        yield 'if(!searchIndex){';
+        yield `for(searchIndex=${offset(depth, pointer)};searchIndex<length&&(charCode=url.charCodeAt(searchIndex))!==${QUESTION}&&charCode!==${HASH};searchIndex++);`;
+        yield 'context.searchIndex=length=searchIndex;';
         yield '}';
         yield* response(root.meta.handlers, root.meta, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
         yield '}';
@@ -345,9 +345,10 @@ function buildFetch(root: Node<Meta>) {
             ctx.env = env;
             ctx.pathIndex = offset;
             ctx.params = {};
+            ctx.set = {};
             for await (const res of find(ctx, root, offset + 1, 0, []))
                 if (typeof res !== 'undefined')
-                    return newResponse(res, ctx.status, ctx.headers);
+                    return newResponse(res, ctx.set);
             break;
         }
         return new Response(null, { status: 404 });
@@ -358,8 +359,6 @@ function buildFetch(root: Node<Meta>) {
             ctx.params[name] = String.prototype.slice.apply(url, paramFragment[i + index]);
     }
     function onRequest(ctx: Ctx, handler: Handler, paramNames?: string[], paramFragment?: [number, number][]) {
-        const { url } = ctx.request;
-        ctx.path ||= url.slice(ctx.pathIndex, ctx.queryIndex);
         if (paramNames && paramFragment)
             param(ctx, paramNames, paramFragment);
         return handler(ctx as Context);
@@ -379,17 +378,17 @@ function buildFetch(root: Node<Meta>) {
         return true;
     }
     async function* find(ctx: Ctx, root: Node<Meta>, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, boolean> {
-        const { url, url: { length } } = ctx.request;
+        const { url } = ctx.request, length = ctx.searchIndex ?? url.length;
         if (root.isRoot) {
             ctx.routeIndex = start;
             if (root.meta.onRequest) {
-                if (!ctx.queryIndex)
-                    for (ctx.queryIndex = start; ctx.queryIndex < length && url.charCodeAt(ctx.queryIndex) !== QUESTION; ctx.queryIndex++);
+                if (!ctx.searchIndex)
+                    for (ctx.searchIndex = start; ctx.searchIndex < length && url.charCodeAt(ctx.searchIndex) !== QUESTION && url.charCodeAt(ctx.searchIndex) !== HASH; ctx.searchIndex++);
                 yield onRequest(ctx, root.meta.onRequest);
             }
         }
-        if (start === length || url.charCodeAt(start) === QUESTION) {
-            ctx.queryIndex = start;
+        if (start === length || url.charCodeAt(start) === QUESTION || url.charCodeAt(start) === HASH) {
+            ctx.searchIndex = start;
             if (root.meta.handlers?.size)
                 return yield* response(ctx, root.meta.handlers, root.root.meta, undefined);
             return false;
@@ -414,15 +413,18 @@ function buildFetch(root: Node<Meta>) {
         if (root.wildcard && (yield* findWildcard(ctx, root.wildcard, start, paramIndex, paramFragment)))
             return true;
         if (root.isRoot) {
-            if (root.meta.notFound)
+            if (root.meta.notFound) {
+                if (!ctx.searchIndex)
+                    for (ctx.searchIndex = start; ctx.searchIndex < length && url.charCodeAt(ctx.searchIndex) !== QUESTION && url.charCodeAt(ctx.searchIndex) !== HASH; ctx.searchIndex++);
                 yield root.meta.notFound(ctx);
+            }
             return true;
         }
         return false;
     }
     async function* findParam(ctx: Ctx, root: ParamNode<Meta>, node: Node<Meta>, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], set?: Set<Node<Meta>>): AsyncGenerator<unknown, boolean> {
-        const { url, url: { length } } = ctx.request;
-        for (let charCode; offset < length && (charCode = url.charCodeAt(offset)) !== QUESTION; offset++) {
+        const { url } = ctx.request, length = ctx.searchIndex ?? url.length;
+        for (let charCode; offset < length && (charCode = url.charCodeAt(offset)) !== QUESTION && charCode !== HASH; offset++) {
             let cnode = node.get(charCode);
             while (!cnode && node !== root) {
                 node = node.meta.fail!;
@@ -454,7 +456,7 @@ function buildFetch(root: Node<Meta>) {
                 return false;
             }
         }
-        ctx.queryIndex = offset;
+        ctx.searchIndex = offset;
         while (!node.meta.handlers?.size && node !== root)
             node = node.meta.fail!;
         if (slashIndex && slashIndex < offset - node.meta.deep!)
@@ -465,24 +467,24 @@ function buildFetch(root: Node<Meta>) {
         return yield* response(ctx, node.meta.handlers, node.root.meta, paramFragment);
     }
     async function* findWildcard(ctx: Ctx, { meta: { handlers }, root: { meta } }: WildcardNode<Meta>, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, boolean> {
-        const { url, url: { length } } = ctx.request;
+        const { url } = ctx.request, length = ctx.searchIndex ?? url.length;
         if (!handlers?.size)
             return false;
-        if (!ctx.queryIndex)
-            for (ctx.queryIndex = start; ctx.queryIndex < length && url.charCodeAt(ctx.queryIndex) !== QUESTION; ctx.queryIndex++);
-        paramFragment[paramIndex] = [start, ctx.queryIndex];
+        if (!ctx.searchIndex)
+            for (ctx.searchIndex = start; ctx.searchIndex < length && url.charCodeAt(ctx.searchIndex) !== QUESTION && url.charCodeAt(ctx.searchIndex) !== HASH; ctx.searchIndex++);
+        paramFragment[paramIndex] = [start, ctx.searchIndex];
         if (yield* response(ctx, handlers, meta, paramFragment))
             return true;
         return false;
     }
 }
 
-interface Router<E, C = void> extends Record<Lowercase<Method>, {
+interface Router<E, C = {}> extends Record<Lowercase<Method>, {
     (path: string, handler: Handler<E, C>): Router<E, C>;
     (path: string, data: unknown): Router<E, C>;
 }> { }
-class Router<E = void, C = void> {
-    #node = createNode<Meta>({});
+class Router<E = unknown, C = {}> {
+    #node = createNode<Meta>();
     constructor(public evaluate = false) {
     }
     on(method: Method, path: string, handler: Handler<E, C>): this;

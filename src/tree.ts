@@ -1,5 +1,5 @@
 
-const ESCAPE = 0x5c, WILDCARD = 0x2a, PARAM = 0x3a, SLASH = 0x2f, QUESTION = 0x3f;
+const ESCAPE = 0x5c, WILDCARD = 0x2a, PARAM = 0x3a, SLASH = 0x2f, QUESTION = 0x3f, HASH = 0x23;
 function isParamNameChar(charCode: number) {
     return /* (0x30 <= charCode && charCode <= 0x39) || */ (0x41 <= charCode && charCode <= 0x5a) || (0x61 <= charCode && charCode <= 0x7a);
 }
@@ -48,8 +48,8 @@ class Node<T extends object> extends Map<number, Node<T>> {
             case WILDCARD:
                 return this.#initWildcard(path, offset + 1, paramNames);
         }
-        if (charCode === QUESTION)
-            throw new Error('Unauthorized character: ?');
+        if (charCode === QUESTION || charCode === HASH)
+            throw new Error(`Unauthorized character: ${String.fromCharCode(charCode)}`);
         const next = this.#set(charCode);
         if (next.isRoot)
             throw new Error();
@@ -166,11 +166,11 @@ class WildcardNode<T extends Record<string, any>> extends Node<T> {
     }
 }
 
-function createNode<T extends object>(meta: T) {
-    return new Node(undefined, meta);
+function createNode<T extends object>() {
+    return new Node<Partial<T>>();
 }
 
-export { SLASH, QUESTION };
+export { SLASH, QUESTION, HASH };
 export { createNode };
 export type { Node, ParamNode, WildcardNode };
 

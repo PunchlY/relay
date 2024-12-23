@@ -1,13 +1,10 @@
+import { SLASH, QUESTION, createNode } from './tree';
+import type { Node, ParamNode, WildcardNode } from './tree';
 
 const Method = ['GET', 'DELETE', 'PUT', 'POST', 'PATCH'] as const;
 type Method = typeof Method[number];
 
 const AsyncGeneratorFunction = (async function* () { }).constructor as AsyncGeneratorFunctionConstructor;
-
-const ESCAPE = 0x5c, WILDCARD = 0x2a, PARAM = 0x3a, SLASH = 0x2f, QUESTION = 0x3f;
-function isParamNameChar(charCode: number) {
-    return /* (0x30 <= charCode && charCode <= 0x39) || */ (0x41 <= charCode && charCode <= 0x5a) || (0x61 <= charCode && charCode <= 0x7a);
-}
 
 function newResponse(response: Response, status?: number, headers?: HeadersInit): Response;
 function newResponse(stream?: (...args: any[]) => AsyncGenerator, status?: number, headers?: HeadersInit): Response;
@@ -20,11 +17,8 @@ function newResponse(data: unknown, status?: number, headers?: HeadersInit) {
         case 'string':
             return new Response(data, { status, headers });
         case 'object':
-            if (data instanceof Response) {
-                if (status || headers)
-                    return new Response(data.body, { status: status ?? data.status, headers: headers ?? data.headers });
-                return data.clone();
-            }
+            if (data instanceof Response)
+                return new Response(data.clone().body, { status: status ?? data.status, headers: headers ?? data.headers });
             if (data === null || data instanceof Blob || data instanceof ReadableStream || data instanceof FormData || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || data instanceof URLSearchParams || data instanceof FormData)
                 return new Response(data, { status, headers });
             break;
@@ -47,250 +41,92 @@ type Context<E = unknown, C = {}> = {
     readonly routeIndex: number;
     readonly queryIndex: number;
     readonly params: Readonly<Record<string, string>>;
+    status?: number;
+    headers?: HeadersInit;
 } & C;
+
 type Handler<E = unknown, C = {}> = (context: Context<E, C>) => unknown;
 
 interface Handlers extends Map<string, { handler: Handler | Response, paramNames?: string[]; }> {
 }
-
-interface Node {
+interface Meta {
+    deep?: number;
+    part?: [number[], Node<Meta>];
+    fail?: Node<Meta>;
     handlers?: Handlers;
     onRequest?: Handler;
     notFound?: Handler;
-    part?: [number[], Node];
-    fail?: Node;
-    param?: ParamNode;
-    wildcard?: WildcardNode;
 }
-class Node extends Map<number, Node> {
-    static create() {
-        return new Node(0, undefined, SLASH);
+
+function build(root: Node<Meta>, mode = -1, buildList = new Set<Node<Meta>>()) {
+    if (buildList.has(root))
+        return;
+    buildList.add(root);
+    if (mode & 1 && root.size === 1) {
+        const charCodeList: number[] = [];
+        let node: Node<Meta> = root;
+        do {
+            const [charCode, next]: [number, Node<Meta>] = node.entries().next().value;
+            node = next;
+            charCodeList.push(charCode);
+        } while (!node.isEndpoint && !node.param && !node.wildcard && node.size === 1);
+        build(node, mode);
+        root.meta.part = [charCodeList, node];
+    } else for (const [, node] of root) {
+        build(node, mode);
     }
-    protected constructor(public readonly deep: number, private readonly parent?: Node, private readonly charCode?: number) {
-        super();
-    }
-    get isRoot() {
-        return !this.parent;
-    }
-    setChild(charCode: number) {
-        let next = super.get(charCode);
-        if (next)
-            return next;
-        next = new Node(this.deep + 1, this, charCode);
-        super.set(charCode, next);
-        return next;
-    }
-    setParam() {
-        return this.param ??= new ParamNode(this);
-    }
-    setWildcard() {
-        return this.wildcard ??= new WildcardNode(this);
-    }
-    mount(node: Node) {
-        if (node.charCode !== SLASH)
-            throw new Error();
-        clean(this);
-        if (this.param || this.wildcard || this.size || this.handlers?.size)
-            throw new Error();
-        if (!this.parent)
-            throw new Error();
-        this.parent.set(SLASH, node);
-    }
-    build() {
-        if (this.size === 1) {
-            const charCodeList: number[] = [];
-            let node: Node = this;
-            do {
-                const [charCode, next]: [number, Node] = node.entries().next().value;
-                node = next;
-                charCodeList.push(charCode);
-            } while (node.size === 1 && !node.handlers?.size && node.deep && !node.param && !node.wildcard);
-            node.build();
-            this.part = [charCodeList, node];
-        } else for (const [, node] of this) {
-            node.build();
-        }
-        this.param?.build();
-        this.wildcard?.build();
-        return this;
-    }
-}
-interface ParamNode {
-    onRequest: undefined;
-    param: undefined;
-    wildcard: undefined;
-}
-class ParamNode extends Node {
-    fail = this;
-    constructor(parent: Node) {
-        super(0, parent);
-    }
-    setParam(): never {
-        throw new Error('is ParamNode');
-    }
-    setWildcard(): never {
-        throw new Error('is ParamNode');
-    }
-    build() {
-        const queue: Node[] = [this];
+    if (mode & 2 && root.param) {
+        root.param.meta.deep = 0;
+        const queue: Node<Meta>[] = [root.param];
         for (let i = 0; i < queue.length; i++) {
             const temp = queue[i];
+            const deep = temp.meta.deep! + 1;
             for (const [charCode, node] of temp) {
-                node.fail = temp !== this && temp.fail?.get(charCode) || this;
-                node.param?.build();
-                node.wildcard?.build();
-                if (node.isRoot)
-                    continue;
-                queue.push(node);
+                if (node.isRoot) {
+                    build(node, mode | 1);
+                } else {
+                    build(node, mode);
+                    node.meta.deep = deep;
+                    node.meta.fail = temp !== root.param && temp.meta.fail?.get(charCode) || root.param;
+                    queue.push(node);
+                }
             }
         }
-        return this;
     }
-}
-interface WildcardNode {
-    onRequest: undefined;
-    paramNames: undefined;
-    param: undefined;
-    wildcard: undefined;
-}
-class WildcardNode extends Node {
-    constructor(parent: Node) {
-        super(0, parent);
-    }
-    setChild(charCode: number): never;
-    setChild() {
-        throw new Error('is WildcardNode');
-    }
-    setParam(): never {
-        throw new Error('is WildcardNode');
-    }
-    setWildcard(): never {
-        throw new Error('is WildcardNode');
-    }
-    build() {
-        return this;
-    }
+    return root;
 }
 
-function get(node: Node, path: string, offset = path.charCodeAt(0) === SLASH ? 1 : path.charCodeAt(0) === ESCAPE && path.charCodeAt(1) === SLASH ? 2 : 0, paramNames: string[] = [], escape = false): { node: Node, paramNames: string[]; } {
-    if (offset >= path.length)
-        return { node, paramNames };
-    const charCode = path.charCodeAt(offset);
-    if (!escape) switch (charCode) {
-        case ESCAPE:
-            return get(node, path, offset + 1, paramNames, true);
-        case PARAM:
-            return getParam(node, path, offset + 1, paramNames);
-        case WILDCARD:
-            return getWildcard(node, path, offset + 1, paramNames);
-    }
-    if (charCode === QUESTION)
-        throw new Error('Unauthorized character: ?');
-    const next = node.setChild(charCode);
-    if (next.isRoot)
-        throw new Error();
-    return get(next, path, offset + 1, paramNames);
-}
-function getParam(node: Node, path: string, offset: number, paramNames: string[]) {
-    let _offset = offset, charCode;
-    while (!isNaN(charCode = path.charCodeAt(_offset)) && isParamNameChar(charCode)) _offset++;
-    if (_offset === offset)
-        return get(node, path, offset - 1, paramNames, true);
-    paramNames.push(path.slice(offset, _offset));
-    return get(node.setParam(), path, charCode === ESCAPE ? _offset + 1 : _offset, paramNames, true);
-}
-function getWildcard(node: Node, path: string, offset: number, paramNames: string[]) {
-    const charCode = path.charCodeAt(offset);
-    if (isNaN(charCode)) {
-        paramNames.push('*');
-        return get(node.setWildcard(), path, offset + 1, paramNames);
-    }
-    return get(node, path, offset - 1, paramNames, true);
-}
-
-function clean(node: Node): boolean {
-    let hasEndpoint = Boolean(node.handlers?.size);
-    for (const [charCode, child] of node) {
-        if (clean(child))
-            hasEndpoint = true;
-        else
-            node.delete(charCode);
-    }
-    if (node.param) {
-        if (clean(node.param))
-            hasEndpoint = true;
-        else
-            delete node.param;
-    }
-    if (node.wildcard) {
-        if (clean(node.wildcard))
-            hasEndpoint = true;
-        else
-            delete node.wildcard;
-    }
-    return hasEndpoint;
-}
-
-function* forEach(node: Node, charCodeLists: number[][] = [[SLASH]]): Generator<[method: string, path: `/${string}`]> {
-    function path(paramNames?: string[]) {
-        return String.raw({
-            raw: [...charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList))],
-        }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as `/${string}`;
-    }
-    if (node.handlers?.size) {
-        for (const [method, { paramNames }] of node.handlers)
-            yield [method, path(paramNames)];
-    }
-    for (const [charCode, child] of node) {
-        const [...charCodeListsCopy] = charCodeLists;
-        const [...charCodeListCopy] = charCodeListsCopy.pop()!;
-        if (charCode === ESCAPE || (isParamNameChar(charCode) && charCodeListCopy.at(-1) === PARAM))
-            charCodeListCopy.push(ESCAPE);
-        charCodeListCopy.push(charCode);
-        charCodeListsCopy.push(charCodeListCopy);
-        yield* forEach(child, charCodeListsCopy);
-    }
-    if (node.param)
-        yield* forEach(node.param, [...charCodeLists, []]);
-    if (node.wildcard)
-        yield* forEach(node.wildcard, [...charCodeLists, []]);
-}
-
-function evaluateFetch<E, C>(root: Node) {
-    interface ParamData extends Record<number, ParamData> { next?: number, handler?: number; }
+function evaluateFetch<E, C>(root: Node<Meta>) {
+    interface ParamData extends Record<number, ParamData> { mount?: number, next?: number, handler?: number; }
     const values = new Map<unknown, `value_${number}`>(), paramDatas: ParamData[] = [];
     const Fetch = Function('newResponse', 'values', [...function* () {
         yield `"use strict";`;
-        //#region function fetch(...){}
         yield 'async function fetch(request,env,context={}){';
-        yield 'const{method,url}=request;let{length}=url,response;';
+        yield 'const{method,url}=request;';
+        yield 'let{length}=url,response;';
         yield `for(let ${offset(0)}=0,count=0;${offset(0)}<length;${offset(0)}++){`;
         yield `if(url.charCodeAt(offset_0)===${SLASH})count++;`;
         yield 'if(count!==3)continue';
         yield 'context.request=request;';
         yield 'context.env=env;';
         yield `context.pathIndex=${offset(0)};`;
-        yield 'context.queryIndex=length;';
         yield 'context.params={};';
         yield 'let queryIndex;';
-        yield* find(root.build(), 0, 1, []);
+        yield* find(root, 0, 1, []);
         yield `break}`;
         yield* onNotFound();
         yield '}';
-        //#endregion
-        //#region values
         if (values.size) {
             yield 'const[';
             for (const name of values.values())
                 yield name, yield ',';
             yield ']=values;';
         }
-        //#endregion
         if (paramDatas.length) {
             yield 'function param(data,deep=0){';
-            yield 'const node=new Map(),{next,handler}=data;';
+            yield 'const node=new Map(),{mount,next,handler}=data;';
             yield 'Object.assign([],data).forEach((next,charCode)=>node.set(charCode,param(next,deep+1)));';
-            yield 'return Object.assign(node,{deep,next,handler});';
+            yield 'return Object.assign(node,{deep,mount,next,handler});';
             yield '}';
             yield 'function build(root){';
             yield 'const queue=[root];';
@@ -306,7 +142,7 @@ function evaluateFetch<E, C>(root: Node) {
             yield `const ${paramDatas.map((paramData, i) => `param_${i}=build(param(${JSON.stringify(paramData)}))`).join(',')};`;
         }
         yield 'return fetch;';
-    }()].join('\n')) as (newResponse: (data: unknown) => Response, values: unknown[]) => (request: Request, env: E, ctx: C) => Promise<Response>;
+    }()].join('\n')) as (newResponse: (data: unknown, status?: number, headers?: HeadersInit) => Response | PromiseLike<Response>, values: unknown[]) => (request: Request, env: E, ctx: C) => Promise<Response>;
     return { Fetch, values: [...values.keys()] };
     function offset<D extends number>(depth: D): `offset_${D}`;
     function offset<D extends number, P extends number>(depth: D, offset: P): `offset_${D}+${P}`;
@@ -322,16 +158,18 @@ function evaluateFetch<E, C>(root: Node) {
         values.set(data, name);
         return name;
     }
-    function paramData(node: Node, nexts: Map<number, Node>, handlersList: Handlers[]) {
+    function paramData(node: Node<Meta>, mountList: Node<Meta>[], nextList: Map<number, Node<Meta>>, handlersList: Handlers[]) {
         const data: ParamData = {};
-        if (node.param || node.wildcard || node.isRoot)
-            data.next = nexts.size + 1, nexts.set(data.next, node);
+        if (node.isRoot)
+            data.mount = mountList.push(node);
         if (node.isRoot)
             return data;
-        if (node.handlers?.size)
-            data.handler = handlersList.push(node.handlers);
+        if (node.param || node.wildcard)
+            data.next = nextList.size + 1, nextList.set(data.next, node);
+        if (node.meta.handlers?.size)
+            data.handler = handlersList.push(node.meta.handlers);
         for (const [charCode, child] of node) {
-            const acNode = paramData(child, nexts, handlersList);
+            const acNode = paramData(child, mountList, nextList, handlersList);
             data[charCode] = acNode;
         }
         return data;
@@ -346,14 +184,14 @@ function evaluateFetch<E, C>(root: Node) {
         yield `context.path??=url.slice(${offset(0)}, length);`;
         if (paramNames && paramCodes)
             yield* param(paramNames, paramCodes);
-        yield `if(typeof (response=await ${value(handler)}(context))!=="undefined")return response=newResponse(response);`;
+        yield `if(typeof (response=await ${value(handler)}(context))!=="undefined")return response=await newResponse(response,context.status,context.headers);`;
     }
     function* onNotFound(notFound?: Handler) {
         if (notFound)
-            yield `if(typeof (response=await ${value(notFound)}(context))!=="undefined")return response=newResponse(response);`;
+            yield `if(typeof (response=await ${value(notFound)}(context))!=="undefined")return response=await newResponse(response,context.status,context.headers);`;
         yield 'return response=new Response(null,{status:404})';
     }
-    function* response(handlers: Handlers, paramCodes?: string[], notFound?: Handler) {
+    function* response(handlers: Handlers, { notFound }: Meta, paramCodes?: string[]) {
         handlers = new Map(handlers);
         const HEAD = handlers.get('HEAD'), GET = handlers.get('GET'), ALL = handlers.get('ALL');
         handlers.delete('HEAD'), handlers.delete('GET'), handlers.delete('ALL');
@@ -368,141 +206,136 @@ function evaluateFetch<E, C>(root: Node) {
             yield `case${JSON.stringify(method)}:`, yield* call(data);
         if (ALL)
             yield `default:`, yield* call(ALL);
-        yield* onNotFound(notFound);
         yield '}';
+        yield* onNotFound(notFound);
         function* call({ handler, paramNames }: { handler: unknown, paramNames?: string[]; }) {
-            if (typeof handler !== 'function') {
-                yield `return ${value(handler)}.clone();`;
-            } else {
+            if (typeof handler === 'function') {
                 yield '{';
                 yield* onRequest(handler, paramNames, paramCodes);
                 yield 'break}';
+            } else {
+                yield `return ${value(handler)}.clone();`;
             }
         }
     }
-    function* find(root: Node, depth: number, pointer: number, paramCodes: string[], notFound?: Handler): Generator<string> {
+    function* find(root: Node<Meta>, depth: number, pointer: number, paramCodes: string[]): Generator<string> {
         if (root.isRoot) {
             yield `context.routeIndex=${offset(depth, pointer)};`;
-            notFound = root.notFound;
-            if (root.onRequest) {
+            if (root.meta.onRequest) {
                 yield 'if(!queryIndex){';
-                yield `queryIndex=url.indexOf('?',${offset(depth, pointer)});`;
-                yield 'if(queryIndex!==-1)length=queryIndex;';
+                yield `for(queryIndex=${offset(depth, pointer)};queryIndex<length&&url.charCodeAt(queryIndex)!==${QUESTION};queryIndex++);`;
+                yield 'length=queryIndex;';
                 yield '}';
-                yield* onRequest(root.onRequest);
+                yield* onRequest(root.meta.onRequest);
             }
         }
-        if (root.handlers?.size) {
+        if (root.meta.handlers?.size) {
             yield `if(${offset(depth, pointer)}===length||url.charCodeAt(${offset(depth, pointer)})===${QUESTION}){`;
             yield `length=${offset(depth, pointer)};`;
-            yield* response(root.handlers, paramCodes, notFound);
+            yield* response(root.meta.handlers, root.root.meta, paramCodes);
             yield '}';
         }
-        if (root.part) {
-            const [charCodeList, next] = root.part;
+        if (root.meta.part) {
+            const [charCodeList, next] = root.meta.part;
             yield `if(${offset(depth, pointer + charCodeList.length)}<=length`;
             for (const [index, charCode] of charCodeList.entries())
                 yield `&&url.charCodeAt(${offset(depth, pointer + index)})===${charCode}`;
             yield '){';
-            yield* find(next, depth, pointer + charCodeList.length, paramCodes, notFound);
+            yield* find(next, depth, pointer + charCodeList.length, paramCodes);
             yield `}`;
         } else if (root.size) {
             yield `switch(url.charCodeAt(${offset(depth, pointer)})){`;
             for (const [charCode, child] of root) {
                 yield `case ${charCode}:{`;
-                yield* find(child, depth, pointer + 1, paramCodes, notFound);
+                yield* find(child, depth, pointer + 1, paramCodes);
                 yield `break}`;
             }
             yield `}`;
         }
         if (root.param)
-            yield* findParam(root.param, depth, pointer, paramCodes, notFound);
+            yield* findParam(root.param, depth, pointer, paramCodes);
         if (root.wildcard)
-            yield* findWildcard(root.wildcard, depth, pointer, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`], notFound);
+            yield* findWildcard(root.wildcard, depth, pointer, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
         if (root.isRoot) {
-            yield* onNotFound(notFound);
+            yield* onNotFound(root.meta.notFound);
         }
     }
-    function* findParam(root: ParamNode | Node, depth: number, pointer: number, paramCodes: string[], notFound?: Handler, start: [depth: number, pointer: number] = [depth, pointer], nexts = new Map<number, Node>(), handlersList: Handlers[] = [], index = paramDatas.push(paramData(root, nexts, handlersList)) - 1): Generator<string> {
+    function* findParam(root: ParamNode<Meta> | Node<Meta>, depth: number, pointer: number, paramCodes: string[], start: [depth: number, pointer: number] = [depth, pointer], mountList: Node<Meta>[] = [], nextList = new Map<number, Node<Meta>>(), handlersList: Handlers[] = [], index = paramDatas.push(paramData(root, mountList, nextList, handlersList)) - 1): Generator<string> {
         const nodeName = `node_${start[0]}`;
-        if (root instanceof ParamNode) {
-            yield `if(${offset(depth, pointer)}<length&&url.charCodeAt(${offset(depth, pointer)})!==${SLASH})`;
-            yield `for(let ${nodeName}=param_${index},slashIndex,${offset(depth + 1)}=${offset(depth, pointer + 1)},charCode;;${offset(depth + 1)}++){`;
-        } else {
-            yield `for(let ${offset(depth + 1)}=${offset(depth, pointer)},charCode;;${offset(depth + 1)}++){`;
+        const notFoundLabel = `NOTFOUND_${start[0]}`;
+        const nextParamCodes = [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-${nodeName}.deep+1)`];
+        if (root.isParamNode()) {
+            yield `if(${offset(depth, pointer)}<length&&url.charCodeAt(${offset(depth, pointer)})!==${SLASH})${notFoundLabel}:{`;
+            yield `let ${nodeName}=param_${index},slashIndex;`;
         }
-        yield `if(${offset(depth + 1)}===length||(charCode=url.charCodeAt(${offset(depth + 1)}))===${QUESTION}){`;
-        yield `length=${offset(depth + 1)};`;
-        yield `while(!${nodeName}.handler&&${nodeName}!==param_${index})${nodeName}=${nodeName}.fail;`;
-        yield `if(!${nodeName}.handler)break;`;
-        yield `if(slashIndex&&slashIndex<${offset(depth + 1)}-${nodeName}.deep)break;`;
-        yield `switch(${nodeName}.handler){`;
-        for (const [index, handlers] of handlersList.entries()) {
-            yield `case ${index + 1}:{`;
-            yield* response(handlers, [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-${nodeName}.deep)`], notFound);
-            yield `break}`;
-        }
-        yield '}';
-        yield 'break}';
+        yield `for(let ${offset(depth + 1)}=${offset(depth, pointer)},charCode;${offset(depth + 1)}<length&&(charCode=url.charCodeAt(${offset(depth + 1)}))!==${QUESTION}||(length=${offset(depth + 1)},false);${offset(depth + 1)}++){`;
         yield `let node=${nodeName}.get(charCode);`;
         yield `while(!node&&${nodeName}!==param_${index})${nodeName}=${nodeName}.fail,node=${nodeName}.get(charCode);`;
         yield `if(node)${nodeName}=node;`;
-        if (nexts.size) {
-            const nextParamCodes = [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-${nodeName}.deep+1)`];
-            yield `if(${nodeName}.next){switch(${nodeName}.next){`;
-            for (const [index, node] of nexts) {
-                if (!node?.isRoot)
-                    continue;
-                nexts.delete(index);
-                yield `case ${index}:{`;
-                yield* find(node, depth + 1, 1, nextParamCodes);
+        if (mountList.length) {
+            yield `if(${nodeName}.mount){switch(${nodeName}.mount){`;
+            for (const [index, next] of mountList.entries()) {
+                yield `case ${index + 1}:{`;
+                yield* find(next, depth + 1, 1, nextParamCodes);
                 yield `break}`;
             }
-            for (const [index, node] of nexts) {
-                if (!node)
-                    continue;
-                yield `case ${index}:{`;
-                yield `if(!slashIndex&&charCode===${SLASH})slashIndex=${offset(depth + 1)};`;
-                yield `if(slashIndex&&slashIndex<=${offset(depth + 1)}-${nodeName}.deep)break;`;
-                if (node.size || node.handlers?.size) {
-                    const _nextList = new Map(nexts);
-                    _nextList.delete(index);
-                    yield* findParam(node, depth + 1, 1, paramCodes, notFound, start, _nextList, handlersList, index);
-                }
-                if (node.param)
-                    yield* findParam(node.param, depth + 1, 1, nextParamCodes, notFound);
-                if (node.wildcard)
-                    yield* findWildcard(node.wildcard, depth, 0, nextParamCodes, notFound);
-                yield `break}`;
-            }
-            yield '}break}';
+            yield `}break ${notFoundLabel}}`;
         }
         yield `if(!slashIndex&&charCode===${SLASH})slashIndex=${offset(depth + 1)};`;
-        yield `if(slashIndex&&slashIndex<=${offset(depth + 1)}-${nodeName}.deep)break;`;
+        yield `if(slashIndex&&slashIndex<=${offset(depth + 1)}-${nodeName}.deep)break ${notFoundLabel};`;
+        if (nextList.size) {
+            yield `if(${nodeName}.next){switch(${nodeName}.next){`;
+            for (const [index, node] of nextList) {
+                yield `case ${index}:{`;
+                if (node.size || node.meta.handlers?.size) {
+                    const _nextList = new Map(nextList);
+                    _nextList.delete(index);
+                    yield* findParam(node, depth + 1, 1, paramCodes, start, [], _nextList, handlersList, index);
+                }
+                if (node.param)
+                    yield* findParam(node.param, depth + 1, 1, nextParamCodes);
+                if (node.wildcard)
+                    yield* findWildcard(node.wildcard, depth, 0, nextParamCodes);
+                yield `break}`;
+            }
+            yield `}break ${notFoundLabel}}`;
+        }
         yield '}';
+        if (root.isParamNode()) {
+            yield `while(!${nodeName}.handler&&${nodeName}!==param_${index})${nodeName}=${nodeName}.fail;`;
+            yield `if(!${nodeName}.handler)break ${notFoundLabel};`;
+            yield `if(slashIndex&&slashIndex<length-${nodeName}.deep)break ${notFoundLabel};`;
+            yield `switch(${nodeName}.handler){`;
+            for (const [index, handlers] of handlersList.entries()) {
+                yield `case ${index + 1}:{`;
+                yield* response(handlers, root.root.meta, [...paramCodes, `url.slice(${offset(...start)},length-${nodeName}.deep)`]);
+                yield `break}`;
+            }
+            yield '}';
+            yield '}';
+        }
     }
-    function* findWildcard(root: WildcardNode, depth: number, pointer: number, paramCodes: string[], notFound?: Handler): Generator<string> {
-        if (!root.handlers?.size)
+    function* findWildcard(root: WildcardNode<Meta>, depth: number, pointer: number, paramCodes: string[]): Generator<string> {
+        if (!root.meta.handlers?.size)
             return;
         yield `if(${offset(depth, pointer)}<length){`;
         yield 'if(!queryIndex){';
-        yield `queryIndex=url.indexOf('?',${offset(depth, pointer)});`;
-        yield 'if(queryIndex!==-1)length=queryIndex;';
+        yield `for(queryIndex=${offset(depth, pointer)};queryIndex<length&&url.charCodeAt(queryIndex)!==${QUESTION};queryIndex++);`;
+        yield 'length=queryIndex;';
         yield '}';
-        yield* response(root.handlers, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`], notFound);
+        yield* response(root.meta.handlers, root.meta, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
         yield '}';
     }
 }
 
-function buildFetch<E, C>(root: Node): (request: Request, env: E, ctx: C) => Promise<Response>;
-function buildFetch(root: Node) {
+function buildFetch<E, C>(root: Node<Meta>): (request: Request, env: E, ctx: C) => Promise<Response>;
+function buildFetch(root: Node<Meta>) {
     type Writable<T> = { -readonly [P in keyof T]: T[P]; };
     interface Ctx extends Writable<Context> {
         params: Record<string, string>;
     }
-    root.build();
     return async function (request: Request, env: unknown, ctx = {} as Ctx) {
-        const { url } = request, { length } = url;
+        const { url, url: { length } } = request;
         for (let offset = 0, count = 0; offset <= length; offset++) {
             if (url.charCodeAt(offset) === SLASH)
                 count++;
@@ -514,7 +347,7 @@ function buildFetch(root: Node) {
             ctx.params = {};
             for await (const res of find(ctx, root, offset + 1, 0, []))
                 if (typeof res !== 'undefined')
-                    return newResponse(res);
+                    return newResponse(res, ctx.status, ctx.headers);
             break;
         }
         return new Response(null, { status: 404 });
@@ -531,7 +364,7 @@ function buildFetch(root: Node) {
             param(ctx, paramNames, paramFragment);
         return handler(ctx as Context);
     }
-    async function* response(ctx: Ctx, handlers: Handlers, paramFragment?: [number, number][], notFound?: Handler) {
+    async function* response(ctx: Ctx, handlers: Handlers, { notFound }: Meta, paramFragment?: [number, number][]) {
         const { method } = ctx.request;
         const data = handlers.get(method) || method === 'HEAD' && handlers.get('GET') || handlers.get('ALL');
         if (!data)
@@ -545,109 +378,100 @@ function buildFetch(root: Node) {
             yield notFound(ctx);
         return true;
     }
-    async function* find(ctx: Ctx, root: Node, start: number, paramIndex: number, paramFragment: [number, number][], notFound?: Handler): AsyncGenerator<unknown, boolean> {
+    async function* find(ctx: Ctx, root: Node<Meta>, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, boolean> {
+        const { url, url: { length } } = ctx.request;
         if (root.isRoot) {
             ctx.routeIndex = start;
-            notFound = root.notFound;
-            if (root.onRequest) {
-                if (!ctx.queryIndex) {
-                    const queryIndex = ctx.request.url.indexOf('?', start);
-                    if (queryIndex !== -1)
-                        ctx.queryIndex = queryIndex;
-                }
-                yield onRequest(ctx, root.onRequest);
+            if (root.meta.onRequest) {
+                if (!ctx.queryIndex)
+                    for (ctx.queryIndex = start; ctx.queryIndex < length && url.charCodeAt(ctx.queryIndex) !== QUESTION; ctx.queryIndex++);
+                yield onRequest(ctx, root.meta.onRequest);
             }
         }
-        const { url } = ctx.request, { length } = url;
         if (start === length || url.charCodeAt(start) === QUESTION) {
             ctx.queryIndex = start;
-            if (root.handlers?.size)
-                return yield* response(ctx, root.handlers, undefined, notFound);
+            if (root.meta.handlers?.size)
+                return yield* response(ctx, root.meta.handlers, root.root.meta, undefined);
             return false;
         }
-        if (root.part) PART: {
+        if (root.meta.part) PART: {
             let offset = start;
-            const [charCodeList, next] = root.part;
+            const [charCodeList, next] = root.meta.part;
             for (const charCode of charCodeList) {
                 if (offset < length && url.charCodeAt(offset++) === charCode)
                     continue;
                 break PART;
             }
-            if (yield* find(ctx, next, offset, paramIndex, paramFragment, notFound))
+            if (yield* find(ctx, next, offset, paramIndex, paramFragment))
                 return true;
         } else {
             const next = root.get(url.charCodeAt(start));
-            if (next && (yield* find(ctx, next, start + 1, paramIndex, paramFragment, notFound)))
+            if (next && (yield* find(ctx, next, start + 1, paramIndex, paramFragment)))
                 return true;
         }
-        if (root.param && url.charCodeAt(start) !== SLASH && (yield* findParam(ctx, root.param, root.param, start, start + 1, 0, paramIndex, paramFragment, notFound)))
+        if (root.param && url.charCodeAt(start) !== SLASH && (yield* findParam(ctx, root.param, root.param, start, start + 1, 0, paramIndex, paramFragment)))
             return true;
-        if (root.wildcard && (yield* findWildcard(ctx, root.wildcard, start, paramIndex, paramFragment, notFound)))
+        if (root.wildcard && (yield* findWildcard(ctx, root.wildcard, start, paramIndex, paramFragment)))
             return true;
         if (root.isRoot) {
-            if (notFound)
-                yield notFound(ctx);
+            if (root.meta.notFound)
+                yield root.meta.notFound(ctx);
             return true;
         }
         return false;
     }
-    async function* findParam(ctx: Ctx, root: ParamNode, node: Node, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], notFound?: Handler, set?: Set<Node>): AsyncGenerator<unknown, boolean> {
-        const { url } = ctx.request, { length } = url;
-        for (let charCode; ; offset++) {
-            if (offset === length || (charCode = url.charCodeAt(offset)) === QUESTION) {
-                ctx.queryIndex = offset;
-                while (!node.handlers?.size && node !== root)
-                    node = node.fail!;
-                if (slashIndex && slashIndex < offset - node.deep)
-                    break;
-                if (!node.handlers?.size)
-                    break;
-                paramFragment[paramIndex] = [start, offset - node.deep];
-                return yield* response(ctx, node.handlers, paramFragment, notFound);
-            }
+    async function* findParam(ctx: Ctx, root: ParamNode<Meta>, node: Node<Meta>, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], set?: Set<Node<Meta>>): AsyncGenerator<unknown, boolean> {
+        const { url, url: { length } } = ctx.request;
+        for (let charCode; offset < length && (charCode = url.charCodeAt(offset)) !== QUESTION; offset++) {
             let cnode = node.get(charCode);
             while (!cnode && node !== root) {
-                node = node.fail!;
+                node = node.meta.fail!;
                 cnode = node.get(charCode);
             }
             if (cnode)
                 node = cnode;
             if (node.isRoot) {
-                paramFragment[paramIndex] = [start, offset - node.deep + 1];
+                paramFragment[paramIndex] = [start, offset - node.meta.deep! + 1];
                 yield* find(ctx, node, offset + 1, paramIndex + 1, paramFragment);
                 return true;
             }
             if (!slashIndex && charCode === SLASH)
                 slashIndex = offset;
-            if (slashIndex && slashIndex <= offset - node.deep)
-                break;
+            if (slashIndex && slashIndex <= offset - node.meta.deep!)
+                return false;
             if (node.param || node.wildcard) {
                 if (set?.has(node))
                     continue;
                 (set ??= new Set()).add(node);
-                if (node.size || node.handlers?.size)
-                    if (yield* findParam(ctx, root, node, start, offset + 1, slashIndex, paramIndex, paramFragment, notFound, set))
+                if (node.size || node.meta.handlers?.size)
+                    if (yield* findParam(ctx, root, node, start, offset + 1, slashIndex, paramIndex, paramFragment, set))
                         return true;
-                paramFragment[paramIndex] = [start, offset - node.deep + 1];
-                if (node.param && offset + 1 < length && url.charCodeAt(offset + 1) !== SLASH && (yield* findParam(ctx, node.param, node.param, offset + 1, offset + 2, 0, paramIndex + 1, paramFragment, notFound, set)))
+                paramFragment[paramIndex] = [start, offset - node.meta.deep! + 1];
+                if (node.param && offset + 1 < length && url.charCodeAt(offset + 1) !== SLASH && (yield* findParam(ctx, node.param, node.param, offset + 1, offset + 2, 0, paramIndex + 1, paramFragment, set)))
                     return true;
-                if (node.wildcard && (yield* findWildcard(ctx, node.wildcard, offset, paramIndex + 1, paramFragment, notFound)))
+                if (node.wildcard && (yield* findWildcard(ctx, node.wildcard, offset, paramIndex + 1, paramFragment)))
                     return true;
-                break;
+                return false;
             }
         }
-        return false;
-    }
-    async function* findWildcard(ctx: Ctx, root: WildcardNode, start: number, paramIndex: number, paramFragment: [number, number][], notFound?: Handler): AsyncGenerator<unknown, boolean> {
-        if (!root.handlers?.size)
+        ctx.queryIndex = offset;
+        while (!node.meta.handlers?.size && node !== root)
+            node = node.meta.fail!;
+        if (slashIndex && slashIndex < offset - node.meta.deep!)
             return false;
-        if (!ctx.queryIndex) {
-            const queryIndex = ctx.request.url.indexOf('?', start);
-            if (queryIndex !== -1)
-                ctx.queryIndex = queryIndex;
-        }
+        if (!node.meta.handlers?.size)
+            return false;
+        paramFragment[paramIndex] = [start, offset - node.meta.deep!];
+        return yield* response(ctx, node.meta.handlers, node.root.meta, paramFragment);
+    }
+    async function* findWildcard(ctx: Ctx, { meta: { handlers }, root: { meta } }: WildcardNode<Meta>, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, boolean> {
+        const { url, url: { length } } = ctx.request;
+        if (!handlers?.size)
+            return false;
+        if (!ctx.queryIndex)
+            for (ctx.queryIndex = start; ctx.queryIndex < length && url.charCodeAt(ctx.queryIndex) !== QUESTION; ctx.queryIndex++);
         paramFragment[paramIndex] = [start, ctx.queryIndex];
-        if (yield* response(ctx, root.handlers, paramFragment, notFound))
+        if (yield* response(ctx, handlers, meta, paramFragment))
             return true;
         return false;
     }
@@ -655,22 +479,19 @@ function buildFetch(root: Node) {
 
 interface Router<E, C = void> extends Record<Lowercase<Method>, {
     (path: string, handler: Handler<E, C>): Router<E, C>;
-    (path: string, data: Response | ((...args: any[]) => AsyncGenerator) | BodyInit): Router<E, C>;
     (path: string, data: unknown): Router<E, C>;
 }> { }
 class Router<E = void, C = void> {
-    #node = Node.create();
+    #node = createNode<Meta>({});
     constructor(public evaluate = false) {
     }
     on(method: Method, path: string, handler: Handler<E, C>): this;
-    on(method: Method, path: string, data: Response | BodyInit): this;
     on(method: Method, path: string, data: unknown): this;
     on(method: string, path: string, handler: Handler<E, C>): this;
-    on(method: string, path: string, data: Response | BodyInit): this;
     on(method: string, path: string, data: unknown): this;
     on(type: string, path: string, handler: any) {
-        const { node, paramNames } = get(this.#node, path);
-        const handlers: Handlers = node.handlers ??= new Map();
+        const { node, paramNames } = this.#node.init(path);
+        const handlers: Handlers = node.meta.handlers ??= new Map();
         const method = type.toUpperCase();
         if (handlers.has(method))
             return this;
@@ -686,32 +507,34 @@ class Router<E = void, C = void> {
         });
         return this;
     }
+    mount<E1 extends E, C1 extends C>(path: string, tree: Router<E1, C1>) {
+        this.#node.mount(path, tree.#node);
+        return this;
+    }
     onRequest(handler: Handler<E, C>) {
         if (typeof handler === 'function')
-            this.#node.onRequest ??= handler as unknown as Handler;
+            this.#node.meta.onRequest ??= handler as unknown as Handler;
         return this;
     }
     notFound(handler: Handler<E, C>) {
         if (typeof handler === 'function')
-            this.#node.notFound ??= handler as unknown as Handler;
-        return this;
-    }
-    mount<E1 extends E,C1 extends C>(path: string, tree: Router<E1, C1>) {
-        if (path.charCodeAt(path.length - 1) !== SLASH)
-            path = `${path}/`;
-        const { node } = get(this.#node, path);
-        node.mount(tree.#node);
+            this.#node.meta.notFound ??= handler as unknown as Handler;
         return this;
     }
     *[Symbol.iterator]() {
-        yield* forEach(this.#node);
+        for (const [raw, { handlers }] of this.#node.metaList()) {
+            if (!handlers)
+                continue;
+            for (const [method, { paramNames }] of handlers)
+                yield [method, String.raw({ raw }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as `/${string}`] as const;
+        }
     }
     evaluateFetch() {
-        clean(this.#node);
+        build(this.#node.clean());
         return evaluateFetch<E, C>(this.#node);
     }
     get fetch() {
-        clean(this.#node);
+        build(this.#node.clean());
         if (!this.evaluate)
             return buildFetch<E, C>(this.#node);
         const { Fetch, values } = evaluateFetch<E, C>(this.#node);

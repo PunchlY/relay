@@ -38,16 +38,5 @@ const app = new Router<Env, ExecutionContext>()
     );
 
 export default {
-    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
-        if (request.method !== 'GET')
-            return app.fetch(request, env, ctx);
-        const cache = caches.default;
-        let response = await cache.match(request.url);
-        if (response)
-            return response;
-        response = await app.fetch(request, env, ctx);
-        response.headers.delete('Set-Cookie');
-        ctx.waitUntil(cache.put(request.url, response.clone()));
-        return response;
-    },
+    fetch: app.fetch,
 };

@@ -13,7 +13,7 @@ const app = new Router<Env, ExecutionContext>()
     })
     .mount('https://', new Router<Env, ExecutionContext & { to: Request; }>()
         .onRequest((ctx) => {
-            ctx.to = new Request(`https://${ctx.request.url.slice(ctx.routeIndex)}`, { headers: ctx.request.headers });
+            ctx.to = new Request(`https://${ctx.request.url.slice(ctx.routeIndex)}`);
         })
         .get('img.hellogithub.com/*', ({ to: request }) => {
             request.headers.set('Referer', 'https://hellogithub.com/');

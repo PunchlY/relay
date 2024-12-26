@@ -100,12 +100,13 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
     const values = new Map<unknown, `value_${number}`>(), paramDatas: ParamData[] = [];
     const Fetch = Function('newResponse', 'values', [...function* () {
         yield `"use strict";`;
-        yield 'const fetch=async(request,env,context={})=>{';
+        yield 'const fetch=async(request,env,context)=>{';
         yield 'const{method,url}=request;';
         yield 'let{length}=url;';
         yield `for(let ${offset(0)}=0,count=0;${offset(0)}<length;${offset(0)}++){`;
         yield `if(url.charCodeAt(offset_0)===${SLASH})count++;`;
         yield 'if(count!==3)continue';
+        yield 'context=Object.create(context??null)';
         yield 'context.request=request;';
         yield 'context.env=env;';
         yield `context.pathIndex=${offset(0)};`;
@@ -160,10 +161,10 @@ function evaluateFetch<E, C>(root: Node<Meta>) {
     }
     function paramData(node: Node<Meta>, mountList: Node<Meta>[], nextList: Map<number, Node<Meta>>, handlersList: Handlers[]) {
         const data: ParamData = {};
-        if (node.isRoot)
+        if (node.isRoot) {
             data.mount = mountList.push(node);
-        if (node.isRoot)
             return data;
+        }
         if (node.param || node.wildcard)
             data.next = nextList.size + 1, nextList.set(data.next, node);
         if (node.meta.handlers?.size)
@@ -349,13 +350,14 @@ function buildFetch(root: Node<Meta>, newResponse: (data: unknown, init?: Respon
         response?: Response;
     }
     const STATIC = Symbol('STATIC');
-    return async (request: Request, env: unknown, ctx = {} as Ctx) => {
+    return async (request: Request, env: unknown, ctx?: Ctx) => {
         const { url, url: { length } } = request;
         for (let offset = 0, count = 0; offset <= length; offset++) {
             if (url.charCodeAt(offset) === SLASH)
                 count++;
             if (count !== 3)
                 continue;
+            ctx = Object.create(ctx ?? null) as Ctx;
             ctx.request = request;
             ctx.env = env;
             ctx.pathIndex = offset;
@@ -480,7 +482,7 @@ function buildFetch(root: Node<Meta>, newResponse: (data: unknown, init?: Respon
                 if (node.size || node.meta.handlers?.size)
                     yield* findParam(ctx, root, node, start, offset + 1, slashIndex, paramIndex, paramFragment, set);
                 paramFragment[paramIndex] = [start, offset - node.meta.deep! + 1];
-                if (node.param && offset + 1 < length && url.charCodeAt(offset + 1) !== SLASH)
+                if (node.param && offset + 1 < length && (charCode = url.charCodeAt(offset + 1)) !== SLASH && charCode !== QUESTION && charCode !== HASH)
                     yield* findParam(ctx, node.param, node.param, offset + 1, offset + 2, 0, paramIndex + 1, paramFragment, set);
                 if (node.wildcard)
                     yield* findWildcard(ctx, node.wildcard, offset, paramIndex + 1, paramFragment);

@@ -11,7 +11,7 @@ const app = new Router<Env, ExecutionContext>()
             text += `${method} ${path}\n`;
         return text;
     })
-    .mount('https://', new Router<Env, ExecutionContext & { to: Request; }>()
+    .mount('https://', new Router<Env, ExecutionContext, { to: Request; }>()
         .onRequest((ctx) => {
             ctx.to = new Request(`https://${ctx.request.url.slice(ctx.routeIndex)}`);
         })

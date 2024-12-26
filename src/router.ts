@@ -19,7 +19,7 @@ function newResponse(data: unknown, init?: ResponseInit) {
             return new Response(data, init);
         case 'object':
             if (data instanceof Response)
-                return new Response(data.body, init);
+                return new Response(data.body, { ...data, ...init });
             if (data === null || data instanceof Blob || data instanceof ReadableStream || data instanceof FormData || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || data instanceof URLSearchParams || data instanceof FormData)
                 return new Response(data, init);
             break;
@@ -33,17 +33,18 @@ function newResponse(data: unknown, init?: ResponseInit) {
     return Response.json(data, init);
 }
 
-type Context<E = unknown, C = {}> = {
+interface Context<E = unknown, C = unknown> {
     readonly request: Request;
     readonly env: E;
+    readonly executionCtx: C;
     readonly pathIndex: number;
     readonly routeIndex: number;
     readonly searchIndex: number;
     readonly params: Readonly<Record<string, string>>;
     readonly set: ResponseInit;
-} & C;
+};
 
-type Handler<E = unknown, C = {}> = (context: Context<E, C>) => unknown;
+type Handler<E = unknown, C = unknown, T = {}> = (context: Context<E, C> & T) => unknown;
 
 interface Handlers extends Map<string, { handler: Handler | Response, paramNames?: string[]; }> {
 }
@@ -103,18 +104,14 @@ function buildFetch(root: Node<Meta>, newResponse: (data: unknown, init?: Respon
         response?: Response;
     }
     const STATIC = Symbol('STATIC');
-    return async (request: Request, env: unknown, ctx = {} as Ctx) => {
+    return async (request: Request, env: unknown, executionCtx: unknown) => {
         const { url, url: { length } } = request;
         for (let offset = 0, count = 0; offset <= length; offset++) {
             if (url.charCodeAt(offset) === SLASH)
                 count++;
             if (count !== 3)
                 continue;
-            ctx.request = request;
-            ctx.env = env;
-            ctx.pathIndex = offset;
-            ctx.params = {};
-            ctx.set = {};
+            const ctx = { request, env, executionCtx, pathIndex: offset, params: {}, set: {} } as Ctx;
             const route = find(ctx, root, offset + 1, 0, []);
             for await (const response of route) {
                 if (typeof response === 'undefined')
@@ -280,17 +277,15 @@ function handlerType(handler: unknown): Handler {
     return handler as Handler;
 }
 
-interface Router<E, C = {}> extends Record<Lowercase<Method>, {
-    (path: string, handler: Handler<E, C>): Router<E, C>;
-    (path: string, data: unknown): Router<E, C>;
+interface Router<E, C, T> extends Record<Lowercase<Method>, {
+    (path: string, handler: Handler<E, C, T>): Router<E, C, T>;
+    (path: string, data: unknown): Router<E, C, T>;
 }> { }
-class Router<E = unknown, C = {}> {
+class Router<E = void, C = void, T = {}> {
     #node = createNode<Meta>();
-    constructor(public evaluate = false) {
-    }
-    on(method: Method, path: string, handler: Handler<E, C>): this;
+    on(method: Method, path: string, handler: Handler<E, C, T>): this;
     on(method: Method, path: string, data: unknown): this;
-    on(method: string, path: string, handler: Handler<E, C>): this;
+    on(method: string, path: string, handler: Handler<E, C, T>): this;
     on(method: string, path: string, data: unknown): this;
     on(type: string, path: string, handler: any) {
         const { node, paramNames } = this.#node.init(path);
@@ -308,23 +303,23 @@ class Router<E = unknown, C = {}> {
         });
         return this;
     }
-    mount<E1 extends E, C1 extends C>(path: string, tree: Router<E1, C1>) {
+    mount<S extends T>(path: string, tree: Router<E, C, S>) {
         this.#node.mount(path, tree.#node);
         return this;
     }
-    onRequest(handler: Handler<E, C>) {
+    onRequest(handler: Handler<E, C, T>) {
         if (this.#node.meta.onRequest)
             throw new Error();
         this.#node.meta.onRequest = handlerType(handler);
         return this;
     }
-    notFound(handler: Handler<E, C>) {
+    notFound(handler: Handler<E, C, T>) {
         if (this.#node.meta.notFound)
             throw new Error();
         this.#node.meta.notFound = handlerType(handler);
         return this;
     }
-    onResponse(handler: Handler<E, C & { readonly response: Response; }>) {
+    onResponse(handler: Handler<E, C, T & { readonly response: Response; }>) {
         if (this.#node.meta.onResponse)
             throw new Error();
         this.#node.meta.onResponse = handlerType(handler);

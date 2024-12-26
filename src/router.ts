@@ -96,7 +96,7 @@ function build(root: Node<Meta>, mode = -1, buildList = new Set<Node<Meta>>()) {
     return root;
 }
 
-function buildFetch<E, C>(root: Node<Meta>, newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>): (request: Request, env: E, ctx: C) => Promise<Response>;
+function buildFetch<E, C>(root: Node<Meta>, newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>): (request: Request, env: E, executionCtx: C) => Promise<Response>;
 function buildFetch(root: Node<Meta>, newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>) {
     type Writable<T> = { -readonly [P in keyof T]: T[P]; };
     interface Ctx extends Writable<Context> {

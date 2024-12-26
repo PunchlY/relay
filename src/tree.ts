@@ -87,30 +87,29 @@ class Node<T extends object> extends Map<number, Node<T>> {
         if (!mount.parent)
             throw new Error();
         mount.parent.set(SLASH, node);
-        mount.parent.isEndpoint = true;
     }
 
     #clean(): boolean {
-        let { isEndpoint } = this;
+        let hasEndpoint = this.isEndpoint || this.isRoot;
         for (const [charCode, child] of this) {
             if (child.#clean())
-                isEndpoint = true;
+                hasEndpoint = true;
             else
                 this.delete(charCode);
         }
         if (this.param) {
             if (this.param.#clean())
-                isEndpoint = true;
+                hasEndpoint = true;
             else
                 delete this.param;
         }
         if (this.wildcard) {
             if (this.wildcard.#clean())
-                isEndpoint = true;
+                hasEndpoint = true;
             else
                 delete this.wildcard;
         }
-        return isEndpoint;
+        return hasEndpoint;
     }
     clean() {
         this.#clean();

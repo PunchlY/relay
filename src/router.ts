@@ -95,253 +95,6 @@ function build(root: Node<Meta>, mode = -1, buildList = new Set<Node<Meta>>()) {
     return root;
 }
 
-function evaluateFetch<E, C>(root: Node<Meta>) {
-    interface ParamData extends Record<number, ParamData> { mount?: number, next?: number, handler?: number; }
-    const values = new Map<unknown, `value_${number}`>(), paramDatas: ParamData[] = [];
-    const Fetch = Function('newResponse', 'values', [...function* () {
-        yield `"use strict";`;
-        yield 'const fetch=async(request,env,context)=>{';
-        yield 'const{method,url}=request;';
-        yield 'let{length}=url;';
-        yield `for(let ${offset(0)}=0,count=0;${offset(0)}<length;${offset(0)}++){`;
-        yield `if(url.charCodeAt(offset_0)===${SLASH})count++;`;
-        yield 'if(count!==3)continue';
-        yield 'context=Object.create(context??null)';
-        yield 'context.request=request;';
-        yield 'context.env=env;';
-        yield `context.pathIndex=${offset(0)};`;
-        yield 'context.params={};';
-        yield 'context.set={};';
-        yield 'let searchIndex,charCode,response;';
-        yield* find(root, 0, 1, []);
-        yield `break}`;
-        yield 'return newResponse(null,{status:404})';
-        yield '}';
-        if (values.size) {
-            yield 'const[';
-            for (const name of values.values())
-                yield name, yield ',';
-            yield ']=values;';
-        }
-        if (paramDatas.length) {
-            yield 'const param=(data,deep=0)=>{';
-            yield 'const node=new Map(),{mount,next,handler}=data;';
-            yield 'Object.assign([],data).forEach((next,charCode)=>node.set(charCode,param(next,deep+1)));';
-            yield 'return Object.assign(node,{deep,mount,next,handler});';
-            yield '}';
-            yield 'const build=(root)=>{';
-            yield 'const queue=[root];';
-            yield 'for (let i=0;i<queue.length;i++){';
-            yield 'const temp=queue[i];';
-            yield 'for(let[charCode,node]of temp){';
-            yield 'node.fail=temp!==root&&temp.fail?.get(charCode)||root;';
-            yield 'queue.push(node);';
-            yield '}';
-            yield '}';
-            yield 'return root;';
-            yield '}';
-            yield `const ${paramDatas.map((paramData, i) => `param_${i}=build(param(${JSON.stringify(paramData)}))`).join(',')};`;
-        }
-        yield 'return fetch;';
-    }()].join('\n')) as (newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>, values: unknown[]) => (request: Request, env: E, ctx: C) => Promise<Response>;
-    return { Fetch, values: [...values.keys()] };
-    function offset<D extends number>(depth: D): `offset_${D}`;
-    function offset<D extends number, P extends number>(depth: D, offset: P): `offset_${D}+${P}`;
-    function offset(depth: number, offset?: number) {
-        if (typeof offset === 'undefined')
-            return `offset_${depth}`;
-        return `offset_${depth}+${offset}`;
-    }
-    function value(data: unknown) {
-        if (values.has(data))
-            return values.get(data)!;
-        const name = `value_${values.size}` as const;
-        values.set(data, name);
-        return name;
-    }
-    function paramData(node: Node<Meta>, mountList: Node<Meta>[], nextList: Map<number, Node<Meta>>, handlersList: Handlers[]) {
-        const data: ParamData = {};
-        if (node.isRoot) {
-            data.mount = mountList.push(node);
-            return data;
-        }
-        if (node.param || node.wildcard)
-            data.next = nextList.size + 1, nextList.set(data.next, node);
-        if (node.meta.handlers?.size)
-            data.handler = handlersList.push(node.meta.handlers);
-        for (const [charCode, child] of node) {
-            const acNode = paramData(child, mountList, nextList, handlersList);
-            data[charCode] = acNode;
-        }
-        return data;
-    }
-    function* onRequest(handler: ((...args: any[]) => any) | Function, paramNames?: string[], paramCodes?: string[]) {
-        if (paramNames && paramCodes) {
-            const index = paramCodes.length - paramNames.length;
-            for (const [key, paramCode] of new Map(paramNames.map((name, i) => [name, paramCodes[i + index]])))
-                yield `context.params[${JSON.stringify(key)}]=${paramCode};`;
-        }
-        yield `if(typeof (response=await ${value(handler)}(context))!=="undefined")return context.response=await newResponse(response,context.set);`;
-    }
-    function* response(handlers: Handlers, { notFound }: Meta, paramCodes?: string[]) {
-        handlers = new Map(handlers);
-        const HEAD = handlers.get('HEAD'), GET = handlers.get('GET'), ALL = handlers.get('ALL');
-        handlers.delete('HEAD'), handlers.delete('GET'), handlers.delete('ALL');
-        yield 'switch(method){';
-        if (HEAD)
-            yield `case"HEAD":`, yield* call(HEAD);
-        else if (GET)
-            yield `case"HEAD":`;
-        if (GET)
-            yield `case"GET":`, yield* call(GET);
-        for (const [method, data] of handlers)
-            yield `case${JSON.stringify(method)}:`, yield* call(data);
-        if (ALL)
-            yield `default:`, yield* call(ALL);
-        yield '}';
-        if (notFound)
-            yield* onRequest(notFound);
-        yield 'return context.response=await newResponse(null,{status:404})';
-        function* call({ handler, paramNames }: { handler: unknown, paramNames?: string[]; }) {
-            if (typeof handler === 'function') {
-                yield '{';
-                yield* onRequest(handler, paramNames, paramCodes);
-                yield 'break}';
-            } else {
-                yield `return context.response=${value(handler)}.clone();`;
-            }
-        }
-    }
-    function* find(root: Node<Meta>, depth: number, pointer: number, paramCodes: string[]): Generator<string> {
-        if (root.isRoot) {
-            if (root.meta.onResponse)
-                yield 'try{';
-            yield `context.routeIndex=${offset(depth, pointer)};`;
-            if (root.meta.onRequest) {
-                yield 'if(!searchIndex){';
-                yield `for(searchIndex=${offset(depth, pointer)};searchIndex<length&&(charCode=url.charCodeAt(searchIndex))!==${QUESTION}&&charCode!==${HASH};searchIndex++);`;
-                yield 'context.searchIndex=length=searchIndex;';
-                yield '}';
-                yield* onRequest(root.meta.onRequest);
-            }
-        }
-        if (root.meta.handlers?.size) {
-            yield `if(${offset(depth, pointer)}===length||(charCode=url.charCodeAt(${offset(depth, pointer)}))===${QUESTION}||charCode===${HASH}){`;
-            yield `context.searchIndex=length=${offset(depth, pointer)};`;
-            yield* response(root.meta.handlers, root.root.meta, paramCodes);
-            yield '}';
-        }
-        if (root.meta.part) {
-            const [charCodeList, next] = root.meta.part;
-            yield `if(${offset(depth, pointer + charCodeList.length)}<=length`;
-            for (const [index, charCode] of charCodeList.entries())
-                yield `&&url.charCodeAt(${offset(depth, pointer + index)})===${charCode}`;
-            yield '){';
-            yield* find(next, depth, pointer + charCodeList.length, paramCodes);
-            yield `}`;
-        } else if (root.size) {
-            yield `switch(url.charCodeAt(${offset(depth, pointer)})){`;
-            for (const [charCode, child] of root) {
-                yield `case ${charCode}:{`;
-                yield* find(child, depth, pointer + 1, paramCodes);
-                yield `break}`;
-            }
-            yield `}`;
-        }
-        if (root.param)
-            yield* findParam(root.param, depth, pointer, paramCodes);
-        if (root.wildcard)
-            yield* findWildcard(root.wildcard, depth, pointer, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
-        if (root.isRoot) {
-            if (root.meta.notFound) {
-                yield 'if(!searchIndex){';
-                yield `for(searchIndex=${offset(depth, pointer)};searchIndex<length&&(charCode=url.charCodeAt(searchIndex))!==${QUESTION}&&charCode!==${HASH};searchIndex++);`;
-                yield 'context.searchIndex=length=searchIndex;';
-                yield '}';
-                yield* onRequest(root.meta.notFound);
-            }
-            yield 'return context.response=await newResponse(null,{status:404});';
-            if (root.meta.onResponse) {
-                yield '}finally{';
-                yield 'if(context.response)try{';
-                yield 'context.set={};';
-                yield* onRequest(root.meta.onResponse);
-                yield '}catch(err){';
-                yield 'context.response=undefined;';
-                yield 'throw err;';
-                yield '}';
-                yield '}';
-            }
-        }
-    }
-    function* findParam(root: ParamNode<Meta> | Node<Meta>, depth: number, pointer: number, paramCodes: string[], start: [depth: number, pointer: number] = [depth, pointer], mountList: Node<Meta>[] = [], nextList = new Map<number, Node<Meta>>(), handlersList: Handlers[] = [], index = paramDatas.push(paramData(root, mountList, nextList, handlersList)) - 1): Generator<string> {
-        const nodeName = `node_${start[0]}`;
-        const notFoundLabel = `NOTFOUND_${start[0]}`;
-        const nextParamCodes = [...paramCodes, `url.slice(${offset(...start)},${offset(depth + 1)}-${nodeName}.deep+1)`];
-        if (root.isParamNode()) {
-            yield `if(${offset(depth, pointer)}<length&&(charCode=url.charCodeAt(${offset(depth, pointer)}))!==${SLASH}&&charCode!==${QUESTION}&&charCode!==${HASH})${notFoundLabel}:{`;
-            yield `let ${nodeName}=param_${index},slashIndex;`;
-        }
-        yield `for(let ${offset(depth + 1)}=${offset(depth, pointer)};${offset(depth + 1)}<length&&(charCode=url.charCodeAt(${offset(depth + 1)}))!==${QUESTION}&&charCode!==${HASH}||(context.searchIndex=length=${offset(depth + 1)},false);${offset(depth + 1)}++){`;
-        yield `let node=${nodeName}.get(charCode);`;
-        yield `while(!node&&${nodeName}!==param_${index})${nodeName}=${nodeName}.fail,node=${nodeName}.get(charCode);`;
-        yield `if(node)${nodeName}=node;`;
-        if (mountList.length) {
-            yield `if(${nodeName}.mount){switch(${nodeName}.mount){`;
-            for (const [index, next] of mountList.entries()) {
-                yield `case ${index + 1}:{`;
-                yield* find(next, depth + 1, 1, nextParamCodes);
-                yield `break}`;
-            }
-            yield `}break ${notFoundLabel}}`;
-        }
-        yield `if(!slashIndex&&charCode===${SLASH})slashIndex=${offset(depth + 1)};`;
-        yield `if(slashIndex&&slashIndex<=${offset(depth + 1)}-${nodeName}.deep)break ${notFoundLabel};`;
-        if (nextList.size) {
-            yield `if(${nodeName}.next){switch(${nodeName}.next){`;
-            for (const [index, node] of nextList) {
-                yield `case ${index}:{`;
-                if (node.size || node.meta.handlers?.size) {
-                    const _nextList = new Map(nextList);
-                    _nextList.delete(index);
-                    yield* findParam(node, depth + 1, 1, paramCodes, start, [], _nextList, handlersList, index);
-                }
-                if (node.param)
-                    yield* findParam(node.param, depth + 1, 1, nextParamCodes);
-                if (node.wildcard)
-                    yield* findWildcard(node.wildcard, depth, 0, nextParamCodes);
-                yield `break}`;
-            }
-            yield `}break ${notFoundLabel}}`;
-        }
-        yield '}';
-        if (root.isParamNode()) {
-            yield `while(!${nodeName}.handler&&${nodeName}!==param_${index})${nodeName}=${nodeName}.fail;`;
-            yield `if(!${nodeName}.handler)break ${notFoundLabel};`;
-            yield `if(slashIndex&&slashIndex<length-${nodeName}.deep)break ${notFoundLabel};`;
-            yield `switch(${nodeName}.handler){`;
-            for (const [index, handlers] of handlersList.entries()) {
-                yield `case ${index + 1}:{`;
-                yield* response(handlers, root.root.meta, [...paramCodes, `url.slice(${offset(...start)},length-${nodeName}.deep)`]);
-                yield `break}`;
-            }
-            yield '}';
-            yield '}';
-        }
-    }
-    function* findWildcard(root: WildcardNode<Meta>, depth: number, pointer: number, paramCodes: string[]): Generator<string> {
-        if (!root.meta.handlers?.size)
-            return;
-        yield `if(${offset(depth, pointer)}<length){`;
-        yield 'if(!searchIndex){';
-        yield `for(searchIndex=${offset(depth, pointer)};searchIndex<length&&(charCode=url.charCodeAt(searchIndex))!==${QUESTION}&&charCode!==${HASH};searchIndex++);`;
-        yield 'context.searchIndex=length=searchIndex;';
-        yield '}';
-        yield* response(root.meta.handlers, root.meta, [...paramCodes, `url.slice(${offset(depth, pointer)},length)`]);
-        yield '}';
-    }
-}
-
 function buildFetch<E, C>(root: Node<Meta>, newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>): (request: Request, env: E, ctx: C) => Promise<Response>;
 function buildFetch(root: Node<Meta>, newResponse: (data: unknown, init?: ResponseInit) => Response | PromiseLike<Response>) {
     type Writable<T> = { -readonly [P in keyof T]: T[P]; };
@@ -350,14 +103,13 @@ function buildFetch(root: Node<Meta>, newResponse: (data: unknown, init?: Respon
         response?: Response;
     }
     const STATIC = Symbol('STATIC');
-    return async (request: Request, env: unknown, ctx?: Ctx) => {
+    return async (request: Request, env: unknown, ctx = {} as Ctx) => {
         const { url, url: { length } } = request;
         for (let offset = 0, count = 0; offset <= length; offset++) {
             if (url.charCodeAt(offset) === SLASH)
                 count++;
             if (count !== 3)
                 continue;
-            ctx = Object.create(ctx ?? null) as Ctx;
             ctx.request = request;
             ctx.env = env;
             ctx.pathIndex = offset;
@@ -586,16 +338,9 @@ class Router<E = unknown, C = {}> {
                 yield [method, String.raw({ raw }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as `/${string}`] as const;
         }
     }
-    evaluateFetch() {
-        build(this.#node.clean());
-        return evaluateFetch<E, C>(this.#node);
-    }
     get fetch() {
         build(this.#node.clean());
-        if (!this.evaluate)
-            return buildFetch<E, C>(this.#node, newResponse);
-        const { Fetch, values } = evaluateFetch<E, C>(this.#node);
-        return Fetch(newResponse, values);
+        return buildFetch<E, C>(this.#node, newResponse);
     }
 }
 for (const method of Method) {

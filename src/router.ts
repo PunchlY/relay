@@ -7,7 +7,7 @@ type Method = typeof Method[number];
 const AsyncGeneratorFunction = (async function* () { }).constructor as AsyncGeneratorFunctionConstructor;
 const GeneratorFunction = (function* () { }).constructor as GeneratorFunctionConstructor;
 
-function newResponse(response: Response): Response;
+function newResponse(response: Response, init?: ResponseInit): Response;
 function newResponse(stream?: (...args: any[]) => AsyncGenerator, init?: ResponseInit): Response;
 function newResponse(body: BodyInit | null, init?: ResponseInit): Response;
 function newResponse(data: number | bigint | string | object, init?: ResponseInit): Response;
@@ -19,7 +19,7 @@ function newResponse(data: unknown, init?: ResponseInit) {
             return new Response(data, init);
         case 'object':
             if (data instanceof Response)
-                return data;
+                return new Response(data.body, init);
             if (data === null || data instanceof Blob || data instanceof ReadableStream || data instanceof FormData || data instanceof ArrayBuffer || ArrayBuffer.isView(data) || data instanceof URLSearchParams || data instanceof FormData)
                 return new Response(data, init);
             break;

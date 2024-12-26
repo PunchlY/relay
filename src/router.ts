@@ -1,4 +1,4 @@
-import { SLASH, QUESTION, createNode } from './tree';
+import { SLASH, createNode } from './tree';
 import type { Node, ParamNode, WildcardNode } from './tree';
 
 const Method = ['GET', 'DELETE', 'PUT', 'POST', 'PATCH', 'ALL'] as const;
@@ -45,7 +45,7 @@ interface Context<E = unknown, C = unknown, S = {}> {
     readonly store: S;
 };
 
-type Handler<E = unknown, C = unknown, S = {}, T = {}> = (context: Context<E, C, S> & T) => unknown;
+type Handler<E = unknown, C = unknown, S = {}, T = {}, R = unknown> = (context: Context<E, C, S> & T) => R;
 
 type Handlers = Map<string, {
     handler: Handler | Response;
@@ -59,7 +59,9 @@ interface Meta {
     handlers?: Handlers;
 
     store?: Record<string, any>;
+    decorator?: Record<string, any>;
     onRequests?: Handler[];
+    onTransforms?: Handler[];
     onResponses?: Handler[];
     notFounds?: Handler[];
 }
@@ -111,24 +113,18 @@ function buildFetch<E, C>(root: Node<Meta>) {
     const STATIC = Symbol('STATIC');
     return async (request: Request, env: E, executionCtx: C) => {
         const { url, url: { length } } = request;
-        for (let offset = 0, count = 0; offset <= length; offset++) {
-            if (url.charCodeAt(offset) === SLASH)
-                count++;
-            if (count !== 3)
+        const pathIndex = url.indexOf('/', 11), qi = url.indexOf('?', pathIndex + 1), searchIndex = qi === -1 ? length : qi;
+        const ctx = { request, env, executionCtx, pathIndex, searchIndex, params: {}, store: {}, set: {} } as Ctx;
+        const route = find(ctx, root, pathIndex + 1, 0, []);
+        for await (const response of route) {
+            if (typeof response === 'undefined')
                 continue;
-            const ctx = { request, env, executionCtx, pathIndex: offset, params: {}, store: {}, set: {} } as Ctx;
-            const route = find(ctx, root, offset + 1, 0, []);
-            for await (const response of route) {
-                if (typeof response === 'undefined')
-                    continue;
-                if (response !== STATIC)
-                    ctx.response = newResponse(response, ctx.set);
-                break;
-            }
-            await route.return();
-            return ctx.response ?? newResponse(null, { status: 404 });
+            if (response !== STATIC)
+                ctx.response = newResponse(response, ctx.set);
+            break;
         }
-        return newResponse(null, { status: 404 });
+        await route.return();
+        return ctx.response || new Response(null, { status: 404 });
     };
     async function* response(ctx: Ctx, handlers: Handlers, { notFounds }: Meta, paramFragment?: [number, number][]) {
         const { method } = ctx.request;
@@ -149,22 +145,26 @@ function buildFetch<E, C>(root: Node<Meta>) {
         }
         if (notFounds?.length) for (const handler of notFounds)
             yield handler(ctx);
-        ctx.set.status = 404;
-        yield null;
+        ctx.response = new Response(null, { status: 404 });
+        yield STATIC;
     }
     async function* find(ctx: Ctx, root: Node<Meta>, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, void> {
+        const { request: { url }, searchIndex: length } = ctx;
         try {
-            const { url } = ctx.request, length = ctx.searchIndex ?? url.length;
             if (root.isRoot) {
-                ctx.routeIndex = start;
-                if (root.meta.onRequests?.length) {
-                    if (!ctx.searchIndex)
-                        for (ctx.searchIndex = start; ctx.searchIndex < length && url.charCodeAt(ctx.searchIndex) !== QUESTION; ctx.searchIndex++);
+                ctx.routeIndex = start - 1;
+                if (root.meta.store)
+                    Object.assign(ctx.store, root.meta.store);
+                if (root.meta.decorator)
+                    Object.assign(ctx, root.meta.decorator);
+                if (root.meta.onRequests?.length)
                     for (const handler of root.meta.onRequests)
                         yield handler(ctx);
-                }
+                if (root.meta.onTransforms?.length)
+                    for (const handler of root.meta.onTransforms)
+                        Object.assign(ctx, await handler(ctx));
             }
-            if (start === length || url.charCodeAt(start) === QUESTION) {
+            if (start === length) {
                 ctx.searchIndex = start;
                 if (root.meta.handlers?.size)
                     yield* response(ctx, root.meta.handlers, root.root.meta, undefined);
@@ -189,14 +189,11 @@ function buildFetch<E, C>(root: Node<Meta>) {
                     yield* findWildcard(ctx, root.wildcard, start, paramIndex, paramFragment);
             }
             if (root.isRoot) {
-                if (root.meta.notFounds?.length) {
-                    if (!ctx.searchIndex)
-                        for (ctx.searchIndex = start; ctx.searchIndex < length && url.charCodeAt(ctx.searchIndex) !== QUESTION; ctx.searchIndex++);
+                if (root.meta.notFounds?.length)
                     for (const handler of root.meta.notFounds)
                         yield handler(ctx);
-                }
-                ctx.set.status = 404;
-                yield null;
+                ctx.response = new Response(null, { status: 404 });
+                yield STATIC;
             }
         } finally {
             if (root.isRoot && root.meta.onResponses?.length && ctx.response) try {
@@ -213,20 +210,15 @@ function buildFetch<E, C>(root: Node<Meta>) {
         }
     }
     async function* findParam(ctx: Ctx, root: ParamNode<Meta>, node: Node<Meta>, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], set?: Set<Node<Meta>>): AsyncGenerator<unknown, void> {
-        const { url } = ctx.request, length = ctx.searchIndex ?? url.length;
-        for (let charCode; offset < length && (charCode = url.charCodeAt(offset)) !== QUESTION; offset++) {
-            let cnode = node.get(charCode);
+        const { request: { url }, searchIndex: length } = ctx;
+        for (let charCode; offset < length; offset++) {
+            let cnode = node.get(charCode = url.charCodeAt(offset));
             while (!cnode && node !== root) {
                 node = node.meta.fail!;
                 cnode = node.get(charCode);
             }
             if (cnode)
                 node = cnode;
-            if (node.isRoot) {
-                paramFragment[paramIndex] = [start, offset - node.meta.deep! + 1];
-                yield* find(ctx, node, offset + 1, paramIndex + 1, paramFragment);
-                return;
-            }
             if (!slashIndex && charCode === SLASH)
                 slashIndex = offset;
             if (slashIndex && slashIndex <= offset - node.meta.deep!)
@@ -238,14 +230,13 @@ function buildFetch<E, C>(root: Node<Meta>) {
                 if (node.size || node.meta.handlers?.size)
                     yield* findParam(ctx, root, node, start, offset + 1, slashIndex, paramIndex, paramFragment, set);
                 paramFragment[paramIndex] = [start, offset - node.meta.deep! + 1];
-                if (node.param && offset + 1 < length && (charCode = url.charCodeAt(offset + 1)) !== SLASH && charCode !== QUESTION)
+                if (node.param && offset + 1 < length && (charCode = url.charCodeAt(offset + 1)) !== SLASH)
                     yield* findParam(ctx, node.param, node.param, offset + 1, offset + 2, 0, paramIndex + 1, paramFragment, set);
                 if (node.wildcard)
                     yield* findWildcard(ctx, node.wildcard, offset, paramIndex + 1, paramFragment);
                 return;
             }
         }
-        ctx.searchIndex = offset;
         while (!node.meta.handlers?.size && node !== root)
             node = node.meta.fail!;
         if (slashIndex && slashIndex < offset - node.meta.deep!)
@@ -256,11 +247,8 @@ function buildFetch<E, C>(root: Node<Meta>) {
         yield* response(ctx, node.meta.handlers, node.root.meta, paramFragment);
     }
     async function* findWildcard(ctx: Ctx, { meta: { handlers }, root: { meta } }: WildcardNode<Meta>, start: number, paramIndex: number, paramFragment: [number, number][]): AsyncGenerator<unknown, void> {
-        const { url } = ctx.request, length = ctx.searchIndex ?? url.length;
         if (!handlers?.size)
             return;
-        if (!ctx.searchIndex)
-            for (ctx.searchIndex = start; ctx.searchIndex < length && url.charCodeAt(ctx.searchIndex) !== QUESTION; ctx.searchIndex++);
         paramFragment[paramIndex] = [start, ctx.searchIndex];
         yield* response(ctx, handlers, meta, paramFragment);
     }
@@ -285,12 +273,32 @@ function handlerType(handler: unknown): Handler {
 }
 
 interface Router<E, C, S, T> extends Record<Lowercase<Method>, {
-    (path: string, handler: Handler<E, C, S, T>): Router<E, C, S, T>;
-    (path: string, data: unknown): Router<E, C, T>;
+    (path: string, handler: Handler<E, C, S, T & {
+        readonly searchIndex: number;
+    }>): Router<E, C, S, T>;
+    (path: string, data: unknown): Router<E, C, S, T>;
 }> { }
 class Router<E = void, C = void, S = {}, T = {}> {
     #node = createNode<Meta>();
-    constructor(public evaluate = false) {
+    mount(path: string, tree: Router<E, C, any, any>) {
+        this.#node.mount(path, tree.#node);
+        return this;
+    }
+    state<K extends string, V>(name: K, data: V): Router<E, C, S & Record<K, V>, T> {
+        (this.#node.meta.store ??= {})[name] = data;
+        return this as Router<E, C, any, T>;
+    }
+    decorate<K extends string, V>(name: K, data: V): Router<E, C, S, T & Record<K, V>> {
+        (this.#node.meta.decorator ??= {})[name] = data;
+        return this as Router<E, C, S, any>;
+    }
+    onRequest(handler: Handler<E, C, S, T>) {
+        (this.#node.meta.onRequests ??= []).push(handlerType(handler));
+        return this;
+    }
+    derive<R>(handler: Handler<E, C, S, T, R | PromiseLike<R>>): Router<E, C, S, T & R> {
+        (this.#node.meta.onTransforms ??= []).push(handler as any);
+        return this as Router<E, C, S, any>;
     }
     on(method: Method, path: string, handler: Handler<E, C, S, T>): this;
     on(method: Method, path: string, data: unknown): this;
@@ -312,24 +320,13 @@ class Router<E = void, C = void, S = {}, T = {}> {
         });
         return this;
     }
-    mount(path: string, tree: Router<E, C, any, any>) {
-        this.#node.mount(path, tree.#node);
-        return this;
-    }
-    onRequest(handler: Handler<E, C, S, T>) {
-        (this.#node.meta.onRequests ??= []).push(handlerType(handler));
-        return this;
-    }
-    state<K extends string, V>(name: K, data: V): Router<E, C, S & Record<K, V>, T>;
-    state(name: string, data: any): Router<E, C, any, T> {
-        (this.#node.meta.store ??= {})[name] = data;
-        return this;
-    }
     notFound(handler: Handler<E, C, S, T>) {
         (this.#node.meta.notFounds ??= []).push(handlerType(handler));
         return this;
     }
-    onResponse(handler: Handler<E, C, S, T & { readonly response: Response; }>) {
+    onResponse(handler: Handler<E, C, S, T & {
+        readonly response: Response;
+    }>) {
         (this.#node.meta.onResponses ??= []).push(handlerType(handler));
         return this;
     }

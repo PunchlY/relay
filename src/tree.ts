@@ -81,10 +81,13 @@ class Node<T extends object> extends Map<number, Node<T>> {
         if (path.charCodeAt(path.length - 1) !== SLASH)
             path = `${path}/`;
         const [mount] = this.#init(path);
+        for (let { parent: node } = mount; node; node = node.parent)
+            if (node.isParamNode())
+                throw new Error();
+        if (!mount.parent)
+            throw new Error();
         mount.#clean();
         if (mount.isEndpoint || mount.param || mount.wildcard || mount.size)
-            throw new Error();
-        if (!mount.parent)
             throw new Error();
         mount.parent.set(SLASH, node);
     }
@@ -169,7 +172,7 @@ function createNode<T extends object>() {
     return new Node<Partial<T>>();
 }
 
-export { SLASH, QUESTION };
+export { SLASH };
 export { createNode };
 export type { Node, ParamNode, WildcardNode };
 

@@ -169,7 +169,7 @@ function createNode<T extends object>() {
     return new Node<Partial<T>>();
 }
 
-export { SLASH, QUESTION, HASH };
+export { SLASH, QUESTION };
 export { createNode };
 export type { Node, ParamNode, WildcardNode };
 

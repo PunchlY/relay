@@ -23,8 +23,11 @@ class Node<T extends object> extends Map<number, Node<T>> {
 
     #set(charCode: number) {
         let next = super.get(charCode);
-        if (next)
+        if (next) {
+            if (next.isRoot)
+                throw new Error();
             return next;
+        }
         next = new Node(this);
         super.set(charCode, next);
         return next;
@@ -49,11 +52,8 @@ class Node<T extends object> extends Map<number, Node<T>> {
                 return this.#initWildcard(path, offset + 1, paramNames);
         }
         if (charCode === QUESTION || charCode === HASH)
-            throw new Error(`Unauthorized character: ${String.fromCharCode(charCode)}`);
-        const next = this.#set(charCode);
-        if (next.isRoot)
-            throw new Error();
-        return next.#init(path, offset + 1, paramNames);
+            throw new Error(`Unauthorized character: ${JSON.stringify(String.fromCharCode(charCode))}`);
+        return this.#set(charCode).#init(path, offset + 1, paramNames);
     }
     #initParam(path: string, offset: number, paramNames: string[]) {
         let _offset = offset, charCode;
@@ -71,6 +71,17 @@ class Node<T extends object> extends Map<number, Node<T>> {
         }
         return this.#init(path, offset - 1, paramNames, true);
     }
+    #initStatic(path: string, offset = path.charCodeAt(0) === SLASH ? 1 : 0): Node<T> {
+        if (offset === path.length) {
+            if (this.isRoot || path.charCodeAt(offset - 1) === SLASH)
+                return this;
+            return this.#set(SLASH);
+        }
+        const charCode = path.charCodeAt(offset);
+        if (charCode === QUESTION || charCode === HASH)
+            throw new Error(`Unauthorized character: ${JSON.stringify(String.fromCharCode(charCode))}`);
+        return this.#set(charCode).#initStatic(path, offset + 1);
+    }
 
     init(path: string) {
         const [node, paramNames] = this.#init(path);
@@ -78,12 +89,7 @@ class Node<T extends object> extends Map<number, Node<T>> {
         return { node, paramNames };
     }
     mount(path: string, node: Node<T>) {
-        if (path.charCodeAt(path.length - 1) !== SLASH)
-            path = `${path}/`;
-        const [mount] = this.#init(path);
-        for (let { parent: node } = mount; node; node = node.parent)
-            if (node.isParamNode())
-                throw new Error();
+        const mount = this.#initStatic(path);
         if (!mount.parent)
             throw new Error();
         mount.#clean();
@@ -172,7 +178,7 @@ function createNode<T extends object>() {
     return new Node<Partial<T>>();
 }
 
-export { SLASH };
+export { SLASH, QUESTION };
 export { createNode };
 export type { Node, ParamNode, WildcardNode };
 

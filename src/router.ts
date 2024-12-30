@@ -181,7 +181,7 @@ function buildFetch<E, C>(root: Node<Meta>) {
         const { request: { url }, searchIndex: length } = ctx;
         try {
             if (root.isRoot) {
-                ctx.routeIndex = start - 1;
+                ctx.routeIndex = start;
                 if (root.meta.store)
                     Object.assign(ctx.store, root.meta.store);
                 if (root.meta.decorator)

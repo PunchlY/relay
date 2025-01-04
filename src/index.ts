@@ -4,7 +4,7 @@ interface Env {
     // ASSETS: Fetcher;
 }
 
-const app = new Router<{ env: Env, executionContext: ExecutionContext; }>()
+const app = new Router<{ env: Env, executionCtx: ExecutionContext; }>()
     .get('/', () => {
         let text = '';
         for (const [method, path] of app)

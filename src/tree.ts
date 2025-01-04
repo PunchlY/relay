@@ -1,21 +1,18 @@
-
 const ESCAPE = 0x5c, WILDCARD = 0x2a, PARAM = 0x3a, SLASH = 0x2f, QUESTION = 0x3f, HASH = 0x23;
 function isParamNameChar(charCode: number) {
     return /* (0x30 <= charCode && charCode <= 0x39) || */ (0x41 <= charCode && charCode <= 0x5a) || (0x61 <= charCode && charCode <= 0x7a);
 }
 
-interface Node<T> {
+interface Node<T extends object> {
     param?: ParamNode<T>;
     wildcard?: WildcardNode<T>;
 }
-class Node<T extends object> extends Map<number, Node<T>> {
+class Node<T> extends Map<number, Node<T>> {
+    readonly meta = {} as Partial<T>;
     readonly root: Node<T>;
     readonly isRoot: boolean;
     isEndpoint = false;
-    constructor(
-        public readonly parent?: Node<T>,
-        public readonly meta = {} as T,
-    ) {
+    constructor(public readonly parent?: Node<T>) {
         super();
         this.root = parent?.root ?? this;
         this.isRoot = this.root === this;
@@ -25,7 +22,7 @@ class Node<T extends object> extends Map<number, Node<T>> {
         let next = super.get(charCode);
         if (next) {
             if (next.isRoot)
-                throw new Error();
+                throw new Error('Cannot set root node as a child node');
             return next;
         }
         next = new Node(this);
@@ -52,7 +49,7 @@ class Node<T extends object> extends Map<number, Node<T>> {
                 return this.#initWildcard(path, offset + 1, paramNames);
         }
         if (charCode === QUESTION || charCode === HASH)
-            throw new Error(`Unauthorized character: ${JSON.stringify(String.fromCharCode(charCode))}`);
+            throw new Error(`Unauthorized character: ${JSON.stringify(String.fromCharCode(charCode))}.`);
         return this.#set(charCode).#init(path, offset + 1, paramNames);
     }
     #initParam(path: string, offset: number, paramNames: string[]) {
@@ -91,10 +88,10 @@ class Node<T extends object> extends Map<number, Node<T>> {
     mount(path: string, node: Node<T>) {
         const mount = this.#initStatic(path);
         if (!mount.parent)
-            throw new Error();
+            throw new Error('Cannot mount node without a parent');
         mount.#clean();
         if (mount.isEndpoint || mount.param || mount.wildcard || mount.size)
-            throw new Error();
+            throw new Error('Cannot mount node on an occupied path');
         mount.parent.set(SLASH, node);
     }
 
@@ -125,7 +122,7 @@ class Node<T extends object> extends Map<number, Node<T>> {
         return this;
     }
 
-    *#metaList(charCodeLists: number[][] = [[SLASH]]): Generator<[readonly string[], meta: T]> {
+    *#metas(charCodeLists: number[][] = [[SLASH]]): Generator<[readonly string[], meta: Partial<T>]> {
         if (this.isEndpoint)
             yield [charCodeLists.map((charCodeList) => String.fromCharCode.apply(String, charCodeList)), this.meta];
         for (const [charCode, child] of this) {
@@ -135,15 +132,15 @@ class Node<T extends object> extends Map<number, Node<T>> {
                 charCodeListCopy.push(ESCAPE);
             charCodeListCopy.push(charCode);
             charCodeListsCopy.push(charCodeListCopy);
-            yield* child.#metaList(charCodeListsCopy);
+            yield* child.#metas(charCodeListsCopy);
         }
         if (this.param)
-            yield* this.param.#metaList([...charCodeLists, []]);
+            yield* this.param.#metas([...charCodeLists, []]);
         if (this.wildcard)
-            yield* this.wildcard.#metaList([...charCodeLists, []]);
+            yield* this.wildcard.#metas([...charCodeLists, []]);
     }
-    *metaList() {
-        yield* this.#metaList();
+    *metas() {
+        yield* this.#metas();
     }
 
     isParamNode(): this is ParamNode<T> {
@@ -153,32 +150,31 @@ class Node<T extends object> extends Map<number, Node<T>> {
         return this instanceof WildcardNode;
     }
 }
-class ParamNode<T extends Record<string, any>> extends Node<T> {
+class ParamNode<T extends object> extends Node<T> {
     set param(value: ParamNode<T> | undefined) {
-        throw new Error('is WildcardParamNode');
+        throw new Error('Cannot set param on ParamNode');
     }
     set wildcard(value: WildcardNode<T> | undefined) {
-        throw new Error('is WildcardParamNode');
+        throw new Error('Cannot set wildcard on ParamNode');
     }
 }
-class WildcardNode<T extends Record<string, any>> extends Node<T> {
+class WildcardNode<T extends object> extends Node<T> {
     set param(value: ParamNode<T> | undefined) {
-        throw new Error('is WildcardNode');
+        throw new Error('Cannot set param on WildcardNode');
     }
     set wildcard(value: WildcardNode<T> | undefined) {
-        throw new Error('is WildcardNode');
+        throw new Error('Cannot set wildcard on WildcardNode');
     }
     set(key: number, value: Node<T>): this;
     set(): never {
-        throw new Error('is WildcardNode');
+        throw new Error('Cannot set child on WildcardNode');
     }
 }
 
 function createNode<T extends object>() {
-    return new Node<Partial<T>>();
+    return new Node<T>();
 }
 
 export { SLASH, QUESTION };
 export { createNode };
 export type { Node, ParamNode, WildcardNode };
-

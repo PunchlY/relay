@@ -31,10 +31,14 @@ function newResponse(data: unknown, set?: Context['set']) {
     return Response.json(data, set);
 }
 
-interface Context<E = unknown, C = unknown, S = {}> {
+type Context<T extends {
+    env?: unknown;
+    executionCtx?: unknown;
+    store?: object;
+} = {}> = {
+    readonly env: T['env'];
+    readonly executionCtx: T['executionCtx'];
     readonly request: Request;
-    readonly env: E;
-    readonly executionCtx: C;
     readonly pathIndex: number;
     readonly routeIndex: number;
     readonly searchIndex: number;
@@ -43,20 +47,16 @@ interface Context<E = unknown, C = unknown, S = {}> {
         status?: number;
         statusText?: string;
     };
-    readonly store: S;
-};
+    readonly store: T['store'] & {};
+} & Omit<T, 'env' | 'executionCtx' | 'store'>;
 
-type Handler<E = unknown, C = unknown, S = {}, T = {}, R = unknown> = (context: Context<E, C, S> & T) => R;
-function Handler(handler: Function): Handler;
-function Handler(handler: unknown): Response;
-function Handler(handler: unknown): Handler | Response {
-    if (typeof handler !== 'function')
-        return newResponse(handler);
-    return handler as Handler;
-}
+type Handler<T extends {
+    env?: unknown;
+    executionCtx?: unknown;
+} = {}, R = unknown> = (context: Context<T>) => R;
 
 type Handlers = Map<string, {
-    data: Handler | Response;
+    data: unknown;
     paramNames?: string[];
 }>;
 
@@ -71,7 +71,7 @@ interface Meta {
     decorator?: Record<string, any>;
     onRequests?: Handler[];
     derive?: Handler[];
-    notFounds?: (Handler | Response)[];
+    notFounds?: unknown[];
     onResponses?: Handler[];
 }
 
@@ -115,9 +115,9 @@ function build(root: Node<Meta>, mode: number, buildList = new Set<Node<Meta>>()
 
 function buildFetch<E, C>(root: Node<Meta>) {
     if (!root.isRoot)
-        throw new Error();
+        throw new Error('Root node is not valid.');
     root = build(root.clean(), 0b0011);
-    interface Ctx extends Writable<Context> {
+    interface Ctx extends Writable<Context<{ env: E, executionCtx: C, store: any; }>> {
         params?: Record<string, string>;
         response?: Response;
     }
@@ -132,8 +132,7 @@ function buildFetch<E, C>(root: Node<Meta>) {
                         const searchIndex = url.indexOf('?', start = pathIndex + 1);
                         if (searchIndex !== -1) length = searchIndex;
                         break PARSE;
-                    }
-                    if (charCode === QUESTION)
+                    } else if (charCode === QUESTION)
                         break;
                 }
                 length = start = pathIndex;
@@ -155,16 +154,16 @@ function buildFetch<E, C>(root: Node<Meta>) {
             store: {},
             set: { headers: {} },
         };
-        const route = find(ctx, root, request.method, url, length, start);
+        const process = find(ctx, root, request.method, url, length, start);
         let fulfilled = false;
-        for (let result = await route.next(); !result.done;) {
+        for (let result = await process.next(); !result.done;) {
             if (typeof result.value === 'undefined') {
-                result = await route.next();
+                result = await process.next();
                 continue;
             }
             if (result.value !== FULFILLED)
                 ctx.response = newResponse(result.value, ctx.set);
-            result = fulfilled ? await route.next() : (fulfilled = true, await route.return());
+            result = fulfilled ? await process.next() : (fulfilled = true, await process.return());
         }
         return ctx.response!;
     };
@@ -174,16 +173,14 @@ function buildFetch<E, C>(root: Node<Meta>) {
             return;
         const { data, paramNames } = handler;
         if (typeof data === 'function') {
+            ctx.params = {};
             if (paramNames && paramFragment) {
-                ctx.params = {};
                 for (const [i, name] of paramNames.entries())
                     ctx.params[name] = String.prototype.slice.apply(url, paramFragment[i]);
             }
-            yield data(ctx as Context);
-        } else {
-            ctx.response = data.clone();
-            yield FULFILLED;
-        }
+            yield data(ctx);
+        } else
+            yield data;
     }
     async function* find(ctx: Ctx, root: Node<Meta>, method: string, url: string, length: number, start: number): AsyncGenerator<unknown, void> {
         try {
@@ -201,7 +198,6 @@ function buildFetch<E, C>(root: Node<Meta>) {
                         Object.assign(ctx, await handler(ctx));
             }
             if (start === length) {
-                ctx.searchIndex = start;
                 if (root.meta.handlers?.size)
                     yield* response(ctx, root.meta.handlers, method, url);
             } else {
@@ -225,15 +221,11 @@ function buildFetch<E, C>(root: Node<Meta>) {
                     yield* findWildcard(ctx, root.wildcard, method, url, length, start, 0, []);
             }
             if (root.isRoot) {
-                if (root.meta.notFounds?.length) for (const handler of root.meta.notFounds)
-                    if (typeof handler !== 'function') {
-                        ctx.response = handler.clone();
-                        yield FULFILLED;
-                    } else {
-                        yield handler(ctx);
-                    }
-                ctx.response = new Response(null, { status: 404 });
-                yield FULFILLED;
+                ctx.set.status = 404;
+                if (root.meta.notFounds?.length)
+                    for (const handler of root.meta.notFounds)
+                        yield typeof handler === 'function' ? handler(ctx) : handler;
+                yield null;
             }
         } finally {
             if (root.isRoot && root.meta.onResponses?.length)
@@ -243,7 +235,7 @@ function buildFetch<E, C>(root: Node<Meta>) {
                 }
         }
     }
-    async function* findParam(ctx: Ctx, root: ParamNode<Meta>, node: Node<Meta>, method: string, url: string, length: number, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], set?: Set<Node<Meta>>): AsyncGenerator<unknown, void> {
+    async function* findParam(ctx: Ctx, root: ParamNode<Meta>, node: Node<Meta>, method: string, url: string, length: number, start: number, offset: number, slashIndex: number, paramIndex: number, paramFragment: [number, number][], set: Set<Node<Meta>> = new Set()): AsyncGenerator<unknown, void> {
         for (let charCode; offset < length; offset++) {
             let cnode = node.get(charCode = url.charCodeAt(offset));
             while (!cnode && node !== root) {
@@ -257,9 +249,9 @@ function buildFetch<E, C>(root: Node<Meta>) {
             if (slashIndex && slashIndex <= offset - node.meta.deep!)
                 return;
             if (node.param || node.wildcard) {
-                if (set?.has(node))
+                if (set.has(node))
                     continue;
-                (set ??= new Set()).add(node);
+                set.add(node);
                 if (node.size || node.meta.handlers?.size)
                     yield* findParam(ctx, root, node, method, url, length, start, offset + 1, slashIndex, paramIndex, paramFragment, set);
                 paramFragment[paramIndex] = [start, offset - node.meta.deep! + 1];
@@ -287,85 +279,87 @@ function buildFetch<E, C>(root: Node<Meta>) {
     }
 }
 
-interface Router<E, C, S, T> extends Record<Lowercase<Method>, {
-    (path: string, handler: Handler<E, C, S, T & {
+interface Router<T> extends Record<Lowercase<Method>, {
+    (path: string, handler: Handler<T & {
         readonly params: Readonly<Record<string, string>>;
-    }>): Router<E, C, S, T>;
-    (path: string, data: unknown): Router<E, C, S, T>;
+    }>): Router<T>;
+    (path: string, data: unknown): Router<T>;
 }> { }
-class Router<E = void, C = void, S = {}, T = {}> {
+class Router<T extends {
+    env?: unknown;
+    executionCtx?: unknown;
+    store?: object;
+} = {}> {
     #node = createNode<Meta>();
-    mount(path: string, tree: Router<E, C, any, any>) {
+    mount(path: string, tree: Router<any>) {
         this.#node.mount(path, tree.#node);
         return this;
     }
-    state<K extends string, V>(name: K, data: V): Router<E, C, S & Record<K, V>, T> {
+    state<K extends string, V>(name: K, data: V): Router<Omit<T, 'store'> & { store: T['store'] & Record<K, V>; }> {
         (this.#node.meta.store ??= {})[name] = data;
-        return this as Router<E, C, any, T>;
+        return this as Router<any>;
     }
-    decorate<K extends string, V>(name: K, data: V): Router<E, C, S, T & Record<K, V>> {
+    decorate<K extends string, V>(name: K, data: V): Router<T & Record<K, V>> {
         (this.#node.meta.decorator ??= {})[name] = data;
-        return this as Router<E, C, S, any>;
+        return this as Router<any>;
     }
-    onRequest(handler: Handler<E, C, S, T>) {
+    onRequest(handler: Handler<T>) {
         if (typeof handler !== 'function')
-            throw new Error();
-        (this.#node.meta.onRequests ??= []).push(Handler(handler));
+            throw new Error('Handler must be a function.');
+        (this.#node.meta.onRequests ??= []).push(handler as Handler);
         return this;
     }
-    derive<R>(handler: Handler<E, C, S, T, R | PromiseLike<R>>): Router<E, C, S, T & R> {
+    derive<R>(handler: Handler<T, R | PromiseLike<R>>): Router<T & R> {
         if (typeof handler !== 'function')
-            throw new Error();
+            throw new Error('Handler must be a function.');
         (this.#node.meta.derive ??= []).push(handler as Handler);
-        return this as Router<E, C, S, any>;
+        return this as Router<any>;
     }
-    on(method: Method, path: string, handler: Handler<E, C, S, T & {
+    on(method: Method, path: string, handler: Handler<T & {
         readonly params: Readonly<Record<string, string>>;
     }>): this;
     on(method: Method, path: string, data: unknown): this;
-    on(method: string, path: string, handler: Handler<E, C, S, T & {
+    on(method: string, path: string, handler: Handler<T & {
         readonly params: Readonly<Record<string, string>>;
     }>): this;
     on(method: string, path: string, data: unknown): this;
-    on(method: string, path: string, handler: unknown) {
+    on(method: string, path: string, data: unknown) {
         const { node, paramNames } = this.#node.init(path);
         const handlers: Handlers = node.meta.handlers ??= new Map();
         method = method.toUpperCase();
         if (handlers.has(method))
-            throw new Error();
+            throw new Error(`Handler for method ${method} already exists.`);
         handlers.set(method, {
-            data: Handler(handler),
+            data,
             paramNames,
         });
         return this;
     }
-    notFound(handler: Handler<E, C, S, T>): this;
+    notFound(handler: Handler<T>): this;
     notFound(data: unknown): this;
-    notFound(handler: Handler<E, C, S, T & {
-        readonly params: Readonly<Record<string, string>>;
-    }>) {
-        (this.#node.meta.notFounds ??= []).push(Handler(handler));
+    notFound(data: unknown) {
+        (this.#node.meta.notFounds ??= []).push(data);
         return this;
     }
-    onResponse(handler: Handler<E, C, S, T & {
-        readonly params: Readonly<Record<string, string>>;
+    onResponse(handler: Handler<T & {
+        readonly params?: Readonly<Record<string, string>>;
         readonly response: Response;
     }>) {
         if (typeof handler !== 'function')
-            throw new Error();
-        (this.#node.meta.onResponses ??= []).push(Handler(handler));
+            throw new Error('Handler must be a function.');
+        (this.#node.meta.onResponses ??= []).push(handler as Handler);
         return this;
     }
     *[Symbol.iterator]() {
-        for (const [raw, { handlers }] of this.#node.metaList()) {
+        for (const [raw, { handlers }] of this.#node.metas()) {
             if (!handlers)
                 continue;
             for (const [method, { paramNames }] of handlers)
                 yield [method, String.raw({ raw }, ...(paramNames || []).map((name) => name.replace(/^[a-zA-Z]/, ':$&'))) as `/${string}`] as const;
         }
     }
-    get fetch() {
-        return buildFetch<E, C>(this.#node);
+    compose() {
+        return buildFetch<T extends { env: infer E; } ? E : void, T extends { executionCtx: infer E; } ? E : void>(this.#node);
     }
 }
 for (const method of Method) {

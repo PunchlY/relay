@@ -4,14 +4,14 @@ interface Env {
     // ASSETS: Fetcher;
 }
 
-const app = new Router<Env, ExecutionContext>()
+const app = new Router<{ env: Env, executionContext: ExecutionContext; }>()
     .get('/', () => {
         let text = '';
         for (const [method, path] of app)
             text += `${method} ${path}\n`;
         return text;
     })
-    .mount('https://', new Router<Env, ExecutionContext>()
+    .mount('https://', new Router<{ env: Env; }>()
         .derive(({ request, request: { url }, routeIndex }) => ({
             to: new Request(`https://${url.slice(routeIndex)}`, request),
         }))
@@ -34,5 +34,5 @@ const app = new Router<Env, ExecutionContext>()
     );
 
 export default {
-    fetch: app.fetch,
+    fetch: app.compose(),
 };

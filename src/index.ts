@@ -27,7 +27,7 @@ const app = new Router<{ env: Env, executionCtx: ExecutionContext; }>()
             request.headers.set('Referer', 'https://csdn.net/');
             return fetch(request);
         })
-        .get('*', ({ to: request }) => {
+        .all('*', ({ to: request }) => {
             request.headers.set('Referer', request.url);
             return fetch(request);
         })

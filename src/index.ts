@@ -1,38 +1,40 @@
-import { Router } from './router';
+import { PatternRouter } from "./router";
 
 interface Env {
     // ASSETS: Fetcher;
 }
 
-const app = new Router<{ env: Env, executionCtx: ExecutionContext; }>()
-    .get('/', () => {
-        let text = '';
-        for (const [method, path] of app)
-            text += `${method} ${path}\n`;
-        return text;
+const proxyRouter = new PatternRouter<Env>()
+    // .addRoute("GET", "https://img.hellogithub.com", ({ request }) => {
+    //     request.headers.set('Referer', 'https://hellogithub.com/');
+    //     return fetch(request);
+    // })
+    // .addRoute("GET", "https://*.sinaimg.cn", ({ request }) => {
+    //     request.headers.set('Referer', 'https://weibo.com/');
+    //     return fetch(request);
+    // })
+    // .addRoute("GET", "https://*.csdnimg.cn", ({ request }) => {
+    //     request.headers.set('Referer', 'https://csdn.net/');
+    //     return fetch(request);
+    // })
+    .addRoute(({ request }) => {
+        request.headers.set('Referer', request.url);
+        return fetch(request);
+    });
+
+const router = new PatternRouter<Env>()
+    .addRoute("GET", { pathname: "/" }, () => {
+        return new Response("hello");
     })
-    .mount('https://', new Router<{ env: Env; }>()
-        .derive(({ request, request: { url }, routeIndex }) => ({
-            to: new Request(`https://${url.slice(routeIndex)}`, request),
-        }))
-        .get('img.hellogithub.com/*', ({ to: request }) => {
-            request.headers.set('Referer', 'https://hellogithub.com/');
-            return fetch(request);
-        })
-        .get(':prefix.sinaimg.cn/*', ({ to: request }) => {
-            request.headers.set('Referer', 'https://weibo.com/');
-            return fetch(request);
-        })
-        .get(':prefix.csdnimg.cn/*', ({ to: request }) => {
-            request.headers.set('Referer', 'https://csdn.net/');
-            return fetch(request);
-        })
-        .all('*', ({ to: request }) => {
-            request.headers.set('Referer', request.url);
-            return fetch(request);
-        })
-    );
+    .addRoute({ pathname: "/(https?://.+)" }, ({ request, env, ctx, pattern }) => {
+        let url = pattern.pathname.groups[0];
+        const search = pattern.search.input;
+        if (search) {
+            url += `?${search}`;
+        }
+        return proxyRouter.fetch(new Request(url, request), env, ctx);
+    });
 
 export default {
-    fetch: app.compose(),
-};
+    fetch: router.fetch,
+} satisfies ExportedHandler<Env>;

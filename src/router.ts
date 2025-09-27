@@ -9,18 +9,18 @@ class MultiMap<K, V> extends Map<K, V[]> {
     }
 }
 
-type Handler<Env = unknown, CfHostMetadata = unknown> = (ctx: {
+type Handler<Env = unknown, CfHostMetadata = unknown> = (
     request: Request<CfHostMetadata, IncomingRequestCfProperties<CfHostMetadata>>,
     env: Env,
     ctx: ExecutionContext,
-}) => Promise<Response> | Response;
+) => Promise<Response> | Response;
 
-type PatternHandler<Env = unknown, CfHostMetadata = unknown> = (ctx: {
+type PatternHandler<Env = unknown, CfHostMetadata = unknown> = (
     request: Request<CfHostMetadata, IncomingRequestCfProperties<CfHostMetadata>>,
     env: Env,
     ctx: ExecutionContext,
-    pattern: URLPatternResult;
-}) => Promise<Response> | Response;
+    pattern: URLPatternResult,
+) => Promise<Response> | Response;
 
 class PatternRouter<Env = unknown, CfHostMetadata = unknown> {
     #routes = new MultiMap<string, [URLPattern, PatternHandler<Env, CfHostMetadata>]>();
@@ -54,16 +54,16 @@ class PatternRouter<Env = unknown, CfHostMetadata = unknown> {
     fetch = async (
         request: Request<CfHostMetadata, IncomingRequestCfProperties<CfHostMetadata>>,
         env: Env,
-        ctx: ExecutionContext
+        ctx: ExecutionContext,
     ) => {
         for (const [pattern, handler] of this.candidates(request.method.toUpperCase())) {
             const patternResult = pattern.exec(request.url);
             if (patternResult) {
-                return handler({ request, env, ctx, pattern: patternResult });
+                return handler(request, env, ctx, patternResult);
             }
         }
         if (this.#fallback)
-            return this.#fallback({ request, ctx, env });
+            return this.#fallback(request, env, ctx);
         return new Response(null, { status: 404 });
     };
 

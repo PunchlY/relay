@@ -12,17 +12,13 @@ const router = new PatternRouter<Env>()
     })
     .addRoute("GET", { pathname: "/bili/cheese/ss:season_id(\\d+).m3u", }, async (request, _env, _ctx, pattern) => {
         const { season_id } = pattern.pathname.groups as { season_id: string; };
-        const cookie = request.headers.get("Cookie");
         const url = new URL("https://api.bilibili.com/pugv/view/web/season");
         url.searchParams.set("season_id", season_id);
-        const res = await fetch(url, {
-            headers: {
-                Cookie: cookie ?? "",
-                "User-Agent": "Wget/1.21.3",
-                "Referer": "https://www.bilibili.com/",
-                "Origin": "https://www.bilibili.com",
-            },
-        });
+        request = new Request(url, request);
+        request.headers.set("Connection", "keep-alive");
+        request.headers.set("Origin", "https://www.bilibili.com/");
+        request.headers.set("Referer", "https://www.bilibili.com/");
+        const res = await fetch(request);
         const data = await res.json<{
             code: 0;
             data: {

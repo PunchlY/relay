@@ -18,7 +18,9 @@ const router = new PatternRouter<Env>()
         const res = await fetch(url, {
             headers: {
                 Cookie: cookie ?? "",
-                Referer: 'https://www.bilibili.com',
+                "User-Agent": "Wget/1.21.3",
+                "Referer": "https://www.bilibili.com/",
+                "Origin": "https://www.bilibili.com",
             },
         });
         const data = await res.json<{
@@ -65,8 +67,8 @@ export default {
     async fetch(request, env, ctx) {
         try {
             return await router.fetch(request, env, ctx);
-        } catch (error) {
-            return new Response(String(error), { status: 505 });
+        } catch {
+            return new Response("Internal Server Error", { status: 500 });
         }
     },
 } satisfies ExportedHandler<Env>;

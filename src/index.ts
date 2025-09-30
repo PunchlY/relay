@@ -1,6 +1,8 @@
 import { PatternRouter } from "./router";
 // @ts-ignore
 import xget from "xget/src/index.js";
+// @ts-ignore
+import { PLATFORMS } from "xget/src/config/platforms.js";
 
 interface Env {
     // ASSETS: Fetcher;
@@ -21,11 +23,15 @@ const router = new PatternRouter<Env>()
         const { season_id } = pattern.pathname.groups as { season_id: string; };
         const url = new URL("https://api.bilibili.com/pugv/view/web/season");
         url.searchParams.set("season_id", season_id);
-        request = new Request(url, request);
-        request.headers.set("Connection", "keep-alive");
-        request.headers.set("Origin", "https://www.bilibili.com/");
-        request.headers.set("Referer", "https://www.bilibili.com/");
-        const res = await fetch(request);
+        const res = await fetch(url, {
+            headers: {
+                cookie: request.headers.get("cookie") ?? "",
+                accept: "*/*",
+                connection: "Keep-Alive",
+                "user-agent": "curl/8.16.0",
+                referer: "https://www.bilibili.com/",
+            },
+        });
         const data = await res.json<{
             code: 0;
             data: {

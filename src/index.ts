@@ -53,7 +53,9 @@ const router = new PatternRouter<Env>()
         request.headers.set("Connection", "keep-alive");
         request.headers.set("Origin", request.headers.get("Origin") || "*");
         request.headers.set("Referer", request.url);
-        const res = await fetch(request);
+
+        let res = await fetch(request);
+        res = new Response(res.body, res);
         res.headers.delete("Set-Cookie");
         return res;
     })

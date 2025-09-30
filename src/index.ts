@@ -13,7 +13,7 @@ const router = new PatternRouter<Env>()
     .addRoute("GET", { pathname: "/test" }, (request) => {
         let content = "";
         for (const [key, value] of request.headers) {
-            content += `${key}: ${value}`;
+            content += `${key}: ${value}\n`;
         }
         return new Response(content);
     })

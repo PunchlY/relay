@@ -12,14 +12,14 @@ const router = new PatternRouter<Env>()
     .addRoute("GET", { pathname: "/" }, () => {
         return new Response("hello");
     })
-    .addRoute("GET", { pathname: "/test" }, (request) => {
+    .addRoute("GET", { pathname: "/headers" }, (request, _env, _ctx) => {
         let content = "";
         for (const [key, value] of request.headers) {
             content += `${key}: ${value}\n`;
         }
         return new Response(content);
     })
-    .addRoute("GET", { pathname: "/bili/cheese/ss:season_id(\\d+).m3u", }, async (request, _env, _ctx, pattern) => {
+    .addRoute("GET", { pathname: "/bili/cheese/ss:season_id(\\d+).m3u", }, async (_request, _env, _ctx, pattern) => {
         const { season_id } = pattern.pathname.groups as { season_id: string; };
         const url = new URL("https://api.bilibili.com/pugv/view/web/season");
         url.searchParams.set("season_id", season_id);
@@ -54,12 +54,10 @@ const router = new PatternRouter<Env>()
     .addRoute("GET", { pathname: "/bili/*", }, () => {
         return new Response("Not Found", { status: 404 });
     })
-    .addRoute({ pathname: "/(https?://.+)" }, async (request, _env, _ctx, pattern) => {
-        let url = pattern.pathname.groups[0]!;
-        const search = pattern.search.input;
-        if (search) {
-            url += `?${search}`;
-        }
+    .addRoute({ pathname: "/:url(https?://.+)" }, async (request, _env, _ctx, pattern) => {
+        const url = new URL(pattern.pathname.groups.url!);
+        url.search = pattern.search.input;
+
         request = new Request(url, request);
         request.headers.delete("host");
         request.headers.delete("cookie");
@@ -73,7 +71,7 @@ const router = new PatternRouter<Env>()
         request.headers.set("origin", request.headers.get("origin") || "*");
         request.headers.set("referer", request.url);
 
-        let res = await fetch(request);
+        let res = await fetch(request, { redirect: "follow" });
         res = new Response(res.body, res);
         res.headers.delete("set-cookie");
         return new Response(res.body, res);

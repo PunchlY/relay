@@ -55,15 +55,22 @@ const router = new PatternRouter<Env>()
             url += `?${search}`;
         }
         request = new Request(url, request);
-        request.headers.delete("Host");
-        request.headers.set("Connection", "keep-alive");
-        request.headers.set("Origin", request.headers.get("Origin") || "*");
-        request.headers.set("Referer", request.url);
+        request.headers.delete("host");
+        request.headers.delete("cookie");
+        request.headers.delete("x-forwarded-proto");
+        request.headers.delete("x-real-ip");
+        request.headers.delete("cf-connecting-ip");
+        request.headers.delete("cf-ipcountry");
+        request.headers.delete("cf-ray");
+        request.headers.delete("cf-visitor");
+        request.headers.set("connection", "keep-alive");
+        request.headers.set("origin", request.headers.get("origin") || "*");
+        request.headers.set("referer", request.url);
 
         let res = await fetch(request);
         res = new Response(res.body, res);
-        res.headers.delete("Set-Cookie");
-        return res;
+        res.headers.delete("set-cookie");
+        return new Response(res.body, res);
     })
     .addRoute(xget.fetch);
 

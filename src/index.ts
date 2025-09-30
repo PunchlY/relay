@@ -10,6 +10,13 @@ const router = new PatternRouter<Env>()
     .addRoute("GET", { pathname: "/" }, () => {
         return new Response("hello");
     })
+    .addRoute("GET", { pathname: "/test" }, (request) => {
+        let content = "";
+        for (const [key, value] of request.headers) {
+            content += `${key}: ${value}`;
+        }
+        return new Response(content);
+    })
     .addRoute("GET", { pathname: "/bili/cheese/ss:season_id(\\d+).m3u", }, async (request, _env, _ctx, pattern) => {
         const { season_id } = pattern.pathname.groups as { season_id: string; };
         const url = new URL("https://api.bilibili.com/pugv/view/web/season");
@@ -48,6 +55,7 @@ const router = new PatternRouter<Env>()
             url += `?${search}`;
         }
         request = new Request(url, request);
+        request.headers.delete("Host");
         request.headers.set("Connection", "keep-alive");
         request.headers.set("Origin", request.headers.get("Origin") || "*");
         request.headers.set("Referer", request.url);

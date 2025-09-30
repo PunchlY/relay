@@ -26,6 +26,7 @@ const router = new PatternRouter<Env>()
         const res = await fetch(url, {
             headers: {
                 accept: "*/*",
+                "accept-encoding": "gzip, br",
                 connection: "Keep-Alive",
                 "user-agent": "curl/8.16.0",
                 referer: "https://www.bilibili.com/",

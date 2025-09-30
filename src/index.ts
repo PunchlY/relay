@@ -25,7 +25,6 @@ const router = new PatternRouter<Env>()
         url.searchParams.set("season_id", season_id);
         const res = await fetch(url, {
             headers: {
-                cookie: request.headers.get("cookie") ?? "",
                 accept: "*/*",
                 connection: "Keep-Alive",
                 "user-agent": "curl/8.16.0",

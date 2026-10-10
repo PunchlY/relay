@@ -26,6 +26,8 @@
           };
 
           programs.deno.enable = true;
+
+          programs.taplo.enable = true;
         };
 
         devShells.default = pkgs.mkShell {

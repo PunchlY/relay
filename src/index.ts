@@ -1,6 +1,7 @@
 import cors from "@elysia/cors";
 import { Elysia, t } from "elysia";
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker";
+import { request as stealthFetch } from "stealth-fetch/lite";
 
 export default new Elysia({
   adapter: CloudflareAdapter,
@@ -34,23 +35,20 @@ export default new Elysia({
     yield `kex=${cf?.tlsCipher || ""}\n`;
   })
   .get("/bili/cheese/:ssid", async function* ({ params, set }) {
-    const res = await fetch(
+    const res = await stealthFetch(
       `https://api.bilibili.com/pugv/view/web/season?season_id=${params.ssid}`,
-      { headers: { referer: "https://www.bilibili.com/" } },
     );
-    const data = await res.json<
-      {
-        code: 0;
-        data: {
+    const data = await res.json() as {
+      code: 0;
+      data: {
+        title: string;
+        episodes: {
+          id: number;
+          duration: number;
           title: string;
-          episodes: {
-            id: number;
-            duration: number;
-            title: string;
-          }[];
-        };
-      } | { code: -404 }
-    >();
+        }[];
+      };
+    } | { code: -404 };
     if (data.code !== 0) return;
     set.headers["content-type"] = "audio/mpegurl";
     const { title, episodes } = data.data;
@@ -72,7 +70,7 @@ export default new Elysia({
       "*": t.String({ format: "uri" }),
     }),
   })
-  .all("/*", async ({ request, params }) => {
+  .all("/*", async ({ request, params, set }) => {
     const targetUrl = new URL(params["*"]);
     targetUrl.search = new URL(request.url).search;
 
@@ -86,20 +84,21 @@ export default new Elysia({
     headers.delete("x-forwarded-proto");
     headers.delete("x-real-ip");
 
-    headers.set("referer", targetUrl.href);
+    headers.delete("cookie");
 
-    const upstream = await fetch(targetUrl, {
+    headers.set("origin", targetUrl.origin);
+    headers.set("referer", `${targetUrl.origin}/`);
+
+    const upstream = await stealthFetch(targetUrl.href, {
       method: request.method,
       headers,
       body: request.body,
       redirect: "follow",
     });
 
-    return new Response(upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: upstream.headers,
-    });
+    set.status = upstream.status;
+    set.headers = upstream.headers;
+    return upstream.body;
   }, {
     params: t.Object({
       "*": t.String({ format: "uri" }),

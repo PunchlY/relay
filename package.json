@@ -9,6 +9,7 @@
     "@cloudflare/workers-types": "^5.20261009.1"
   },
   "dependencies": {
-    "@elysia/cors": "^1.4.2"
+    "@elysia/cors": "^1.4.2",
+    "stealth-fetch": "^0.2.2"
   }
 }

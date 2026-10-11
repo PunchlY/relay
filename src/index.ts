@@ -1,13 +1,15 @@
-import cors from "@elysia/cors";
 import { Elysia } from "elysia";
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker";
 
 export default new Elysia({
   adapter: CloudflareAdapter,
 })
-  .use(cors({}))
-  .get("/", () => "Hello!")
-  .all("/headers", function* ({ headers }) {
+  .use(import("./cors"))
+  .get("/", ({ set }) => {
+    set.headers["cache-control"] = "public, max-age=3600";
+    return "Hello!";
+  })
+  .get("/headers", function* ({ headers }) {
     for (const [key, value] of Object.entries(headers)) {
       yield `${key}: ${value}\n`;
     }

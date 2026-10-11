@@ -20,9 +20,11 @@ export default new Elysia({
       };
     } | { code: -404 };
     if (data.code !== 0) {
+      set.headers["cache-control"] = "public, max-age=60";
       set.status = 404;
       return;
     }
+    set.headers["cache-control"] = "public, max-age=3600";
     set.headers["content-type"] = "audio/mpegurl";
     const { title, episodes } = data.data;
     yield "#EXTM3U\n";

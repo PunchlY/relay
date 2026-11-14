@@ -11,7 +11,7 @@ export default new Elysia({
       for (const { method, path } of app.routes) {
         yield `${method} ${path}\n`;
       }
-    })
+    }),
   )
   .get("/headers", function* ({ headers }) {
     for (const [key, value] of Object.entries(headers)) {
@@ -27,8 +27,8 @@ export default new Elysia({
     yield `ip=${headers["x-forwarded-for"] ?? headers["x-real-ip"] ?? ""}\n`;
     yield `ts=${(Date.now() / 1000).toFixed(3)}\n`;
     yield `visit_scheme=${url.protocol.replace(":", "")}\n`;
-    yield `uag=${headers["user-agent"] || ""}`,
-      yield `colo=${cf?.colo || ""}\n`;
+    (yield `uag=${headers["user-agent"] || ""}`,
+      yield `colo=${cf?.colo || ""}\n`);
     // yield `sliver=none\n`
     yield `http=${cf?.httpProtocol || ""}\n`;
     yield `loc=${cf?.country || ""}\n`;

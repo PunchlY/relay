@@ -17,11 +17,12 @@ const scopes = Object.entries<ScopeOptions>({
   "*://*": {},
 }).map(([input, opt]) => {
   const stealth = opt.stealth ?? false;
-  const cache = opt.cache === true
-    ? true
-    : typeof opt.cache !== "number" || opt.cache < 0
-    ? 0
-    : opt.cache;
+  const cache =
+    opt.cache === true
+      ? true
+      : typeof opt.cache !== "number" || opt.cache < 0
+        ? 0
+        : opt.cache;
   const headers = Object.entries<string | true | null>({
     host: null,
     "content-length": null,
@@ -31,7 +32,7 @@ const scopes = Object.entries<ScopeOptions>({
     "cf-visitor": null,
     "x-forwarded-proto": null,
     "x-real-ip": null,
-    "cookie": null,
+    cookie: null,
     ...opt.headers,
   });
   return {
@@ -39,20 +40,18 @@ const scopes = Object.entries<ScopeOptions>({
     fetch: stealth ? stealthFetch : global.fetch,
     cache,
     headers: {
-      remove: headers
-        .filter((pair) => pair[1] === null)
-        .map(([name]) => name),
-      set: headers
-        .filter((pair): pair is [string, string] =>
-          typeof pair[1] === "string"
-        ),
+      remove: headers.filter((pair) => pair[1] === null).map(([name]) => name),
+      set: headers.filter(
+        (pair): pair is [string, string] => typeof pair[1] === "string",
+      ),
     },
   };
 });
 
 function http(protocol: string) {
-  return new Elysia({ prefix: `/${protocol}` })
-    .all("//*", async ({ request, params, set }) => {
+  return new Elysia({ prefix: `/${protocol}` }).all(
+    "//*",
+    async ({ request, params, set }) => {
       const targetUrl = new URL(`${protocol}//${params["*"]}`);
       targetUrl.search = new URL(request.url).search;
 
@@ -79,9 +78,10 @@ function http(protocol: string) {
       });
 
       set.status = upstream.status;
-      set.headers = upstream.headers instanceof Headers
-        ? Object.fromEntries(upstream.headers)
-        : upstream.headers;
+      set.headers =
+        upstream.headers instanceof Headers
+          ? Object.fromEntries(upstream.headers)
+          : upstream.headers;
 
       set.headers["cache-tag"] = "proxy";
       if (typeof scope.cache === "number" && scope.cache > 0) {
@@ -91,9 +91,8 @@ function http(protocol: string) {
       }
 
       return upstream.body;
-    });
+    },
+  );
 }
 
-export default new Elysia()
-  .use(http("https:"))
-  .use(http("http:"));
+export default new Elysia().use(http("https:")).use(http("http:"));

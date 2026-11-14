@@ -3,22 +3,25 @@ import { request as stealthFetch } from "stealth-fetch";
 
 export default new Elysia({
   prefix: "/bili",
-})
-  .get("/cheese/:ssid", async function* ({ params, set }) {
+}).get(
+  "/cheese/:ssid",
+  async function* ({ params, set }) {
     const res = await stealthFetch(
       `https://api.bilibili.com/pugv/view/web/season?season_id=${params.ssid}`,
     );
-    const data = await res.json() as {
-      code: 0;
-      data: {
-        title: string;
-        episodes: {
-          id: number;
-          duration: number;
-          title: string;
-        }[];
-      };
-    } | { code: -404 };
+    const data = (await res.json()) as
+      | {
+          code: 0;
+          data: {
+            title: string;
+            episodes: {
+              id: number;
+              duration: number;
+              title: string;
+            }[];
+          };
+        }
+      | { code: -404 };
     if (data.code !== 0) {
       set.headers["cache-control"] = "public, max-age=60";
       set.status = 404;
@@ -33,8 +36,10 @@ export default new Elysia({
       yield `#EXTINF:${duration} group-title="News",${title}\n`;
       yield `https://www.bilibili.com/cheese/play/ep${id}\n`;
     }
-  }, {
+  },
+  {
     params: t.Object({
       ssid: t.Numeric({ minimum: 1 }),
     }),
-  });
+  },
+);

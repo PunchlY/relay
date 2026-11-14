@@ -29,9 +29,15 @@
             priority = 2;
           };
 
-          programs.deno.enable = true;
-
-          programs.taplo.enable = true;
+          settings.formatter.bun = {
+            command = "${pkgs.bun}/bin/bun";
+            options = ["fmt" "--"];
+            includes = [
+              "*.ts"
+              "*.json"
+              "*.toml"
+            ];
+          };
         };
 
         devShells.default = pkgs.mkShell {

@@ -16,11 +16,7 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false,
-    "lib": [
-      "ESNext"
-    ],
-    "types": [
-      "@cloudflare/workers-types"
-    ]
+    "lib": ["ESNext"],
+    "types": ["@cloudflare/workers-types"]
   }
 }

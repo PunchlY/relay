@@ -5,10 +5,14 @@ export default new Elysia({
   adapter: CloudflareAdapter,
 })
   .use(import("./cors"))
-  .get("/", ({ set }) => {
-    set.headers["cache-control"] = "public, max-age=3600";
-    return "Hello!";
-  })
+  .use((app) =>
+    app.get("/", function* ({ set }) {
+      set.headers["cache-control"] = "public, max-age=3600";
+      for (const { method, path } of app.routes) {
+        yield `${method} ${path}\n`;
+      }
+    })
+  )
   .get("/headers", function* ({ headers }) {
     for (const [key, value] of Object.entries(headers)) {
       yield `${key}: ${value}\n`;
@@ -36,5 +40,6 @@ export default new Elysia({
     yield `kex=${cf?.tlsCipher || ""}\n`;
   })
   .use(import("./bili"))
+  .use(import("./gh-api"))
   .use(import("./proxy"))
   .compile();

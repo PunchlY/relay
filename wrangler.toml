@@ -3,5 +3,14 @@ main = "./src/index.ts"
 compatibility_date = "2026-10-11"
 compatibility_flags = ["nodejs_compat"]
 
+workers_dev = false
+
 [cache]
 enabled = true
+
+[[routes]]
+pattern = "relay.punchly.eu.org"
+zone_name = "punchly.eu.org"
+custom_domain = true
+enabled = true
+previews_enabled = false

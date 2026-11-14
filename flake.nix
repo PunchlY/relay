@@ -16,6 +16,10 @@
       ];
       perSystem = {pkgs, ...}: {
         treefmt = {
+          settings.excludes = [
+            "worker-configuration.d.ts"
+          ];
+
           programs.deadnix = {
             enable = true;
             priority = 1;

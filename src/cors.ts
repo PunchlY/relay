@@ -8,10 +8,9 @@ export default new Elysia()
       headers["access-control-request-headers"];
     set.headers["access-control-max-age"] = "86400";
   })
-  .onAfterHandle(({ request, set }) => {
+  .onAfterHandle({ as: "global" }, ({ request, set }) => {
     if (request.method !== "OPTIONS") {
       set.headers["access-control-allow-methods"] = request.method;
     }
     set.headers["access-control-allow-origin"] = "*";
-  })
-  .as("global");
+  });

@@ -5,13 +5,13 @@ export default new Elysia({
   prefix: "/gh-api",
 }).get(
   "/repos/:owner/:repo/releases/assets/:asset_id",
-  async ({ params, redirect, set }) => {
+  async ({ params, set }) => {
     const [owner, repo, asset_id] = [
       params.owner,
       params.repo,
       params.asset_id,
     ].map(encodeURIComponent);
-    const { url, status } = await fetch(
+    const { ok, headers, body } = await fetch(
       `https://api.github.com/repos/${owner}/${repo}/releases/assets/${asset_id}`,
       {
         method: "HEAD",
@@ -23,11 +23,14 @@ export default new Elysia({
         redirect: "follow",
       },
     );
-    if (status !== 200) {
-      set.status = status;
-      return;
+    if (!ok) {
+      set.headers["cache-control"] = "public, max-age=60";
+      set.status = 404;
+      return null;
     }
-    return redirect(url);
+    set.headers = Object.fromEntries(headers);
+    set.headers["cache-control"] = "public, max-age=14400";
+    return body;
   },
   {
     params: t.Object({

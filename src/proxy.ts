@@ -3,7 +3,7 @@ import { request as stealthFetch } from "stealth-fetch";
 
 interface ScopeOptions {
   stealth?: boolean;
-  cache?: true | number;
+  cache?: boolean | number;
   headers?: Record<string, string | true | null>;
 }
 
@@ -12,18 +12,25 @@ const scopes = Object.entries<ScopeOptions>({
     stealth: true,
   },
   "*://i.pximg.net": {
-    cache: 3600,
+    cache: 14400,
   },
-  "*://*": {},
-}).map(([input, opt]) => {
-  const stealth = opt.stealth ?? false;
-  const cache =
-    opt.cache === true
-      ? true
-      : typeof opt.cache !== "number" || opt.cache < 0
-        ? 0
-        : opt.cache;
-  const headers = Object.entries<string | true | null>({
+  "*://*": {
+    cache: true,
+  },
+}).map(([input, { stealth = false, cache = false, headers = {} }]) => {
+  const ttl =
+    typeof cache === "number" && Number.isFinite(cache) && cache > 0
+      ? Math.floor(cache)
+      : 0;
+
+  const revalidate = cache === true;
+  const cacheControl = revalidate
+    ? "public, max-age=0, must-revalidate"
+    : ttl > 0
+      ? `public, max-age=${ttl}`
+      : "no-store";
+
+  headers = {
     host: null,
     "content-length": null,
     "cf-connecting-ip": null,
@@ -33,15 +40,19 @@ const scopes = Object.entries<ScopeOptions>({
     "x-forwarded-proto": null,
     "x-real-ip": null,
     cookie: null,
-    ...opt.headers,
-  });
+    ...headers,
+    ...(!revalidate && { "if-none-match": null, "if-modified-since": null }),
+  };
+
   return {
     pattern: new URLPattern(input),
     fetch: stealth ? stealthFetch : global.fetch,
-    cache,
+    cacheControl,
     headers: {
-      remove: headers.filter((pair) => pair[1] === null).map(([name]) => name),
-      set: headers.filter(
+      remove: Object.entries(headers)
+        .filter(([, value]) => value === null)
+        .map(([name]) => name),
+      set: Object.entries(headers).filter(
         (pair): pair is [string, string] => typeof pair[1] === "string",
       ),
     },
@@ -57,8 +68,6 @@ function http(protocol: string) {
 
       const scope = scopes.find(({ pattern }) => pattern.test(targetUrl))!;
 
-      const fetch = scope.fetch;
-
       const headers = new Headers(request.headers);
       headers.set("origin", targetUrl.origin);
       headers.set("referer", `${targetUrl.origin}/`);
@@ -69,26 +78,27 @@ function http(protocol: string) {
         headers.set(name, value);
       }
 
-      const upstream = await fetch(targetUrl.href, {
+      const upstream = await (void 0, scope.fetch)(targetUrl.href, {
         method: request.method,
         headers,
         body: request.body,
         redirect: "follow",
-        cache: "no-cache",
+        cache: "no-store",
       });
 
       set.status = upstream.status;
+
       set.headers =
         upstream.headers instanceof Headers
           ? Object.fromEntries(upstream.headers)
           : upstream.headers;
 
+      set.headers["cache-control"] =
+        request.method === "GET" || request.method === "HEAD"
+          ? scope.cacheControl
+          : "no-store";
+
       set.headers["cache-tag"] = "proxy";
-      if (typeof scope.cache === "number" && scope.cache > 0) {
-        set.headers["cache-control"] = `public, max-age=${scope.cache}`;
-      } else if (!scope.cache) {
-        set.headers["cache-control"] = "no-store";
-      }
 
       return upstream.body;
     },

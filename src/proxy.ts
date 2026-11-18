@@ -1,56 +1,42 @@
+import type { CacheControlValue } from "@tusbar/cache-control";
+import * as CacheControl from "@tusbar/cache-control";
+import { env } from "cloudflare:workers";
 import { Elysia } from "elysia";
 import { request as stealthFetch } from "stealth-fetch";
 
 interface ScopeOptions {
   stealth?: boolean;
-  cache?: boolean | number;
-  headers?: Record<string, string | true | null>;
+  cacheControl?: CacheControlValue;
+  headers?: Record<string, string | boolean>;
 }
 
 const scopes = Object.entries<ScopeOptions>({
-  "*://{*.}?bilibili.com": {
+  "https://{*.}?bilibili.com": {
     stealth: true,
   },
-  "*://i.pximg.net": {
-    cache: 14400,
+  "https://i.pximg.net": {
+    cacheControl: { maxAge: 14400 },
+  },
+  "https://api.github.com/repos/:owner/:repo/releases/assets/:asset_id": {
+    cacheControl: { maxAge: 14400 },
+    headers: {
+      accept: "application/octet-stream",
+      authorization: `Bearer ${env.GITHUB_TOKEN}`,
+      "user-agent": "curl/8.22.0",
+    },
   },
   "*://*": {
-    cache: true,
+    cacheControl: { maxAge: 60 },
+    headers: { accept: true },
   },
-}).map(([input, { stealth = false, cache = false, headers = {} }]) => {
-  const ttl =
-    typeof cache === "number" && Number.isFinite(cache) && cache > 0
-      ? Math.floor(cache)
-      : 0;
-
-  const revalidate = cache === true;
-  const cacheControl = revalidate
-    ? "public, max-age=0, must-revalidate"
-    : ttl > 0
-      ? `public, max-age=${ttl}`
-      : "no-store";
-
-  headers = {
-    host: null,
-    "content-length": null,
-    "cf-connecting-ip": null,
-    "cf-ipcountry": null,
-    "cf-ray": null,
-    "cf-visitor": null,
-    "x-forwarded-proto": null,
-    "x-real-ip": null,
-    cookie: null,
-    ...headers,
-    ...(!revalidate && { "if-none-match": null, "if-modified-since": null }),
-  };
-
+}).map(([input, { stealth = false, cacheControl = {}, headers = {} }]) => {
   return {
     pattern: new URLPattern(input),
     fetch: stealth ? stealthFetch : global.fetch,
     cacheControl,
     headers: {
-      remove: Object.entries(headers)
-        .filter(([, value]) => value === null)
+      inherit: Object.entries(headers)
+        .filter(([, value]) => value === true)
         .map(([name]) => name),
       set: Object.entries(headers).filter(
         (pair): pair is [string, string] => typeof pair[1] === "string",
@@ -60,7 +46,7 @@ const scopes = Object.entries<ScopeOptions>({
 });
 
 function http(protocol: string) {
-  return new Elysia({ prefix: `/${protocol}` }).all(
+  return new Elysia({ prefix: `/${protocol}` }).get(
     "//*",
     async ({ request, params, set }) => {
       const targetUrl = new URL(`${protocol}//${params["*"]}`);
@@ -68,12 +54,14 @@ function http(protocol: string) {
 
       const scope = scopes.find(({ pattern }) => pattern.test(targetUrl))!;
 
-      const headers = new Headers(request.headers);
+      const headers = new Headers();
+      for (const name of scope.headers.inherit) {
+        if (request.headers.has(name)) {
+          headers.set(name, request.headers.get(name)!);
+        }
+      }
       headers.set("origin", targetUrl.origin);
       headers.set("referer", `${targetUrl.origin}/`);
-      for (const name of scope.headers.remove) {
-        headers.delete(name);
-      }
       for (const [name, value] of scope.headers.set) {
         headers.set(name, value);
       }
@@ -93,12 +81,17 @@ function http(protocol: string) {
           ? Object.fromEntries(upstream.headers)
           : upstream.headers;
 
-      set.headers["cache-control"] =
-        request.method === "GET" || request.method === "HEAD"
-          ? scope.cacheControl
-          : "no-store";
+      const cacheControl: CacheControlValue =
+        upstream.status >= 500
+          ? { public: true, maxAge: 60 }
+          : upstream.status >= 400
+            ? { noStore: true }
+            : { public: true, ...scope.cacheControl };
+      set.headers["cache-control"] = CacheControl.format(cacheControl);
 
       set.headers["cache-tag"] = "proxy";
+
+      set.headers.vary = scope.headers.inherit.join();
 
       return upstream.body;
     },

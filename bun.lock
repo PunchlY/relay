@@ -5,6 +5,7 @@
     "": {
       "name": "relay",
       "dependencies": {
+        "@tusbar/cache-control": "^3.0.1",
         "elysia": "^1.4.30",
         "stealth-fetch": "^0.2.2",
       },
@@ -23,6 +24,8 @@
     "@tokenizer/inflate": ["@tokenizer/inflate@0.4.1", "", { "dependencies": { "debug": "^4.4.3", "token-types": "^6.1.1" } }, "sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA=="],
 
     "@tokenizer/token": ["@tokenizer/token@0.3.0", "", {}, "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A=="],
+
+    "@tusbar/cache-control": ["@tusbar/cache-control@3.0.1", "", {}, "sha512-iOQTRNeRQ2ehl6iGNcm23XbcwANeeOaj8efesiK0Nsl63jIcSrdt+PpTrZlGzVaz/a4UHrL91pg09C3zYmi8JA=="],
 
     "cookie": ["cookie@1.1.1", "", {}, "sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ=="],
 

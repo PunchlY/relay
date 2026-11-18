@@ -39,7 +39,7 @@ export default new Elysia({
   },
   {
     params: t.Object({
-      ssid: t.Numeric({ minimum: 1 }),
+      ssid: t.Integer({ minimum: 1 }),
     }),
   },
 );

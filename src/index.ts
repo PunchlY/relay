@@ -40,6 +40,5 @@ export default new Elysia({
     yield `kex=${cf?.tlsCipher || ""}\n`;
   })
   .use(import("./bili"))
-  .use(import("./gh-api"))
   .use(import("./proxy"))
   .compile();
